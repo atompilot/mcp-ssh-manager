@@ -404,6 +404,11 @@ async function main() {
   console.error('╚════════════════════════════════════════════════════════════╝');
   console.error('');
 
+  // Load configuration
+  await configLoader.load({
+    envPath: path.join(__dirname, '..', '.env')
+  });
+
   const transport = new HttpServerTransport({ port, host });
   const mcpServer = new McpSshServer();
 
