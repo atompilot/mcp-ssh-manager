@@ -7,8 +7,8 @@ import '../providers/transfer_provider.dart';
 import '../services/embedded_server_service.dart';
 import '../widgets/advanced_settings_dialog.dart';
 import '../widgets/connection_dialog.dart';
-import '../widgets/server_sidebar.dart';
-import '../widgets/file_browser_panel.dart';
+import '../widgets/local_file_browser.dart';
+import '../widgets/remote_file_browser.dart';
 import '../widgets/settings_dialog.dart';
 import '../widgets/transfer_panel.dart';
 
@@ -101,7 +101,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final connectionProvider = context.watch<ConnectionProvider>();
-    final colorScheme = Theme.of(context).colorScheme;
 
     // Show splash screen during startup
     if (_startupState != StartupState.ready && _startupState != StartupState.error) {
@@ -126,10 +125,10 @@ class _HomeScreenState extends State<HomeScreen> {
           // Toolbar
           _buildToolbar(context, connectionProvider),
 
-          // Main content
+          // Main content - Dual pane layout
           Expanded(
             child: connectionProvider.isConnected
-                ? _buildMainContent(context, connectionProvider)
+                ? _buildDualPaneContent(context, connectionProvider)
                 : _buildDisconnectedScreen(context, connectionProvider),
           ),
 
@@ -303,7 +302,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
-      height: 48,
+      height: 40,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerHighest,
@@ -314,29 +313,31 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Row(
         children: [
           // Logo/Title
-          Icon(Icons.folder_shared, color: colorScheme.primary),
+          Icon(Icons.folder_shared, size: 20, color: colorScheme.primary),
           const SizedBox(width: 8),
           Text(
             'MCP File Manager',
             style: TextStyle(
               fontWeight: FontWeight.bold,
+              fontSize: 13,
               color: colorScheme.onSurface,
             ),
           ),
-          const SizedBox(width: 24),
+          const SizedBox(width: 16),
 
           // Connection status
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
               color: connectionProvider.isConnected
                   ? Colors.green.withOpacity(0.1)
                   : Colors.grey.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(12),
               border: Border.all(
                 color: connectionProvider.isConnected
                     ? Colors.green
                     : Colors.grey,
+                width: 0.5,
               ),
             ),
             child: Row(
@@ -346,15 +347,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   connectionProvider.isConnected
                       ? Icons.cloud_done
                       : Icons.cloud_off,
-                  size: 16,
+                  size: 14,
                   color:
                       connectionProvider.isConnected ? Colors.green : Colors.grey,
                 ),
-                const SizedBox(width: 6),
+                const SizedBox(width: 4),
                 Text(
                   connectionProvider.isConnected ? 'Connected' : 'Disconnected',
                   style: TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     color: connectionProvider.isConnected
                         ? Colors.green
                         : Colors.grey,
@@ -373,6 +374,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 _showTransferPanel
                     ? Icons.download_done
                     : Icons.download_outlined,
+                size: 18,
               ),
               tooltip: 'Toggle Transfer Panel',
               onPressed: () {
@@ -380,31 +382,40 @@ class _HomeScreenState extends State<HomeScreen> {
                   _showTransferPanel = !_showTransferPanel;
                 });
               },
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             ),
             IconButton(
-              icon: const Icon(Icons.refresh),
+              icon: const Icon(Icons.refresh, size: 18),
               tooltip: 'Refresh Servers',
               onPressed: () => connectionProvider.refreshServers(),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             ),
           ],
 
           // Settings button (editor settings)
           IconButton(
-            icon: const Icon(Icons.edit_outlined),
+            icon: const Icon(Icons.edit_outlined, size: 18),
             tooltip: 'Editor Settings',
             onPressed: () => _showSettingsDialog(context),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
 
           // Advanced settings button (servers, tools, Claude Code)
           IconButton(
-            icon: const Icon(Icons.tune),
+            icon: const Icon(Icons.tune, size: 18),
             tooltip: 'Advanced Settings',
             onPressed: () => _showAdvancedSettingsDialog(context),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
 
           IconButton(
             icon: Icon(
               connectionProvider.isConnected ? Icons.link_off : Icons.link,
+              size: 18,
             ),
             tooltip:
                 connectionProvider.isConnected ? 'Disconnect' : 'Connect',
@@ -415,71 +426,113 @@ class _HomeScreenState extends State<HomeScreen> {
                 _showConnectionDialog(context);
               }
             },
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildMainContent(
+  Widget _buildDualPaneContent(
       BuildContext context, ConnectionProvider connectionProvider) {
-    return Row(
-      children: [
-        // Server sidebar
-        SizedBox(
-          width: 220,
-          child: ServerSidebar(
-            servers: connectionProvider.servers,
-            selectedServer: connectionProvider.selectedServer,
-            onServerSelected: connectionProvider.selectServer,
-          ),
-        ),
-
-        // Divider
-        const VerticalDivider(width: 1, thickness: 1),
-
-        // File browser
-        Expanded(
-          child: connectionProvider.selectedServer != null
-              ? _transferProvider != null
-                  ? ChangeNotifierProvider.value(
-                      value: _transferProvider!,
-                      child: FileBrowserPanel(
-                        client: connectionProvider.client,
-                        server: connectionProvider.selectedServer!,
-                      ),
-                    )
-                  : FileBrowserPanel(
-                      client: connectionProvider.client,
-                      server: connectionProvider.selectedServer!,
-                    )
-              : _buildNoServerSelected(context),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildNoServerSelected(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.dns_outlined,
-            size: 64,
-            color: colorScheme.onSurfaceVariant.withOpacity(0.5),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Select a server from the sidebar',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
+    return Row(
+      children: [
+        // Left pane - Local files
+        Expanded(
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border(
+                right: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+              ),
+            ),
+            child: Column(
+              children: [
+                // Local pane header
+                Container(
+                  height: 28,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHigh,
+                    border: Border(
+                      bottom: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.computer, size: 14, color: colorScheme.primary),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Local',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: colorScheme.onSurface,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
+                // Local file browser
+                Expanded(
+                  child: LocalFileBrowser(
+                    onFileSelected: (file) {
+                      // Handle local file selection
+                      print('Local file selected: ${file.fullPath}');
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
+        ),
+
+        // Right pane - Remote files
+        Expanded(
+          child: Column(
+            children: [
+              // Remote pane header
+              Container(
+                height: 28,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHigh,
+                  border: Border(
+                    bottom: BorderSide(color: colorScheme.outlineVariant, width: 0.5),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.cloud, size: 14, color: colorScheme.primary),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Remote',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Remote file browser
+              Expanded(
+                child: RemoteFileBrowser(
+                  client: connectionProvider.client,
+                  servers: connectionProvider.servers,
+                  onFileSelected: (file, server) {
+                    // Handle remote file selection
+                    print('Remote file selected: ${file.name} on ${server.name}');
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
