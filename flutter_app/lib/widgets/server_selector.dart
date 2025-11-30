@@ -276,14 +276,14 @@ class _ServerSelectorState extends State<ServerSelector> {
             children: [
               // Server icon
               Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
                   color: colorScheme.primary.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
+                  borderRadius: BorderRadius.circular(6),
                 ),
                 child: Icon(
                   CupertinoIcons.desktopcomputer,
-                  size: 24,
+                  size: 20,
                   color: colorScheme.primary,
                 ),
               ),
@@ -292,19 +292,19 @@ class _ServerSelectorState extends State<ServerSelector> {
               Text(
                 server.name,
                 style: TextStyle(
-                  fontSize: 14,
+                  fontSize: 13,
                   fontWeight: FontWeight.w600,
                   color: colorScheme.onSurface,
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 2),
               // Host
               Text(
                 server.host,
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 10,
                   color: colorScheme.outline,
                 ),
                 maxLines: 1,
@@ -314,7 +314,7 @@ class _ServerSelectorState extends State<ServerSelector> {
               Text(
                 server.user,
                 style: TextStyle(
-                  fontSize: 11,
+                  fontSize: 10,
                   color: colorScheme.outline,
                 ),
                 maxLines: 1,

@@ -344,24 +344,31 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
       );
     }
 
-    return GestureDetector(
-      onSecondaryTapDown: (details) => _showEmptySpaceContextMenu(context, details.globalPosition),
-      behavior: HitTestBehavior.translucent,
-      child: ListView.builder(
-        itemCount: _files.length,
-        itemBuilder: (context, index) {
+    return ListView.builder(
+      itemCount: _files.length + 1, // +1 for empty space at bottom
+      itemBuilder: (context, index) {
+        if (index < _files.length) {
           final file = _files[index];
           final isSelected = _selectedFiles.contains(file.fullPath);
-
           return _buildFileRow(file, isSelected, colorScheme);
-        },
-      ),
+        }
+        // Empty space at bottom for context menu
+        return GestureDetector(
+          onSecondaryTapDown: (details) => _showEmptySpaceContextMenu(context, details.globalPosition),
+          behavior: HitTestBehavior.opaque,
+          child: const SizedBox(height: 200),
+        );
+      },
     );
   }
 
   Widget _buildFileRow(LocalFile file, bool isSelected, ColorScheme colorScheme) {
     return GestureDetector(
-      onSecondaryTapDown: (details) => _showFileContextMenu(context, details.globalPosition, file),
+      onSecondaryTapDown: (details) {
+        // Stop propagation to prevent parent context menu from showing
+        _showFileContextMenu(context, details.globalPosition, file);
+      },
+      behavior: HitTestBehavior.opaque,
       child: InkWell(
         onTap: () => _toggleSelection(file),
         onDoubleTap: () => _openItem(file),
