@@ -16,6 +16,9 @@ import '../widgets/remote_file_browser.dart';
 import '../widgets/settings_dialog.dart';
 import '../widgets/transfer_panel.dart';
 
+// Re-export drag data types for convenience
+export '../widgets/local_file_browser.dart' show LocalFile, DraggedLocalFiles, DraggedRemoteFiles;
+
 /// Startup state for the app
 enum StartupState {
   initializing,
@@ -43,6 +46,10 @@ class _HomeScreenState extends State<HomeScreen> {
   StartupState _startupState = StartupState.initializing;
   String? _startupError;
   String _startupMessage = 'Initializing...';
+
+  // Keys to access browser state
+  final GlobalKey<dynamic> _localBrowserKey = GlobalKey();
+  final GlobalKey<dynamic> _remoteBrowserKey = GlobalKey();
 
   @override
   void initState() {
@@ -527,7 +534,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 // Local file browser
                 Expanded(
                   child: LocalFileBrowser(
+                    key: _localBrowserKey,
                     onFileSelected: (file) => _openLocalFile(context, file.fullPath),
+                    onUploadFiles: (files) => _uploadFilesToServer(context, connectionProvider, files),
+                    onDownloadFiles: (remoteFiles, localDestination) =>
+                        _downloadFilesToLocal(context, connectionProvider, remoteFiles, localDestination),
                   ),
                 ),
               ],
@@ -567,9 +578,12 @@ class _HomeScreenState extends State<HomeScreen> {
               // Remote file browser
               Expanded(
                 child: RemoteFileBrowser(
+                  key: _remoteBrowserKey,
                   client: connectionProvider.client,
                   servers: connectionProvider.servers,
                   onFileSelected: (file, server, fullPath) => _openRemoteFile(context, connectionProvider, server, fullPath),
+                  onUploadFiles: (localFiles, remoteDestination, server) =>
+                      _uploadLocalFilesToRemote(context, connectionProvider, localFiles, remoteDestination, server),
                 ),
               ),
             ],
@@ -721,5 +735,119 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     }
+  }
+
+  /// Upload local files to the currently selected remote server
+  Future<void> _uploadFilesToServer(
+    BuildContext context,
+    ConnectionProvider connectionProvider,
+    List<LocalFile> files,
+  ) async {
+    // Get the remote browser state to find selected server and path
+    final remoteBrowserState = _remoteBrowserKey.currentState;
+    if (remoteBrowserState == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Please select a server first'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+
+    final server = remoteBrowserState.selectedServer;
+    final remotePath = remoteBrowserState.currentPath;
+
+    if (server == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Please select a server first'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+      return;
+    }
+
+    // Queue uploads
+    for (final file in files) {
+      final remoteDestPath = remotePath.endsWith('/')
+          ? '$remotePath${file.name}'
+          : '$remotePath/${file.name}';
+
+      _transferProvider?.queueUpload(
+        serverName: server.name,
+        localPath: file.fullPath,
+        remotePath: remoteDestPath,
+        fileName: file.name,
+      );
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Uploading ${files.length} file(s) to ${server.name}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Upload local files that were dropped on the remote browser
+  Future<void> _uploadLocalFilesToRemote(
+    BuildContext context,
+    ConnectionProvider connectionProvider,
+    DraggedLocalFiles localFiles,
+    String remoteDestination,
+    SshServer server,
+  ) async {
+    // Queue uploads
+    for (final file in localFiles.files) {
+      final remoteDestPath = remoteDestination.endsWith('/')
+          ? '$remoteDestination${file.name}'
+          : '$remoteDestination/${file.name}';
+
+      _transferProvider?.queueUpload(
+        serverName: server.name,
+        localPath: file.fullPath,
+        remotePath: remoteDestPath,
+        fileName: file.name,
+      );
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Uploading ${localFiles.files.length} file(s) to ${server.name}'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Download remote files to local
+  Future<void> _downloadFilesToLocal(
+    BuildContext context,
+    ConnectionProvider connectionProvider,
+    DraggedRemoteFiles remoteFiles,
+    String localDestination,
+  ) async {
+    // Queue downloads
+    for (final file in remoteFiles.files) {
+      final remoteFile = file as RemoteFile;
+      final remotePath = remoteFiles.sourcePath.endsWith('/')
+          ? '${remoteFiles.sourcePath}${remoteFile.name}'
+          : '${remoteFiles.sourcePath}/${remoteFile.name}';
+      final localPath = '$localDestination/${remoteFile.name}';
+
+      _transferProvider?.queueDownload(
+        serverName: remoteFiles.serverName,
+        remotePath: remotePath,
+        localPath: localPath,
+        fileName: remoteFile.name,
+      );
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Downloading ${remoteFiles.files.length} file(s)'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
   }
 }

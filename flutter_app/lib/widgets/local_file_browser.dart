@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 enum LocalFileAction {
   open,
   openInFinder,
+  uploadToServer,
   info,
   delete,
   rename,
@@ -17,6 +18,14 @@ enum LocalFileAction {
   newFolder,
   newFile,
   refresh,
+}
+
+/// Data model for drag operations
+class DraggedLocalFiles {
+  final List<LocalFile> files;
+  final String sourcePath;
+
+  DraggedLocalFiles({required this.files, required this.sourcePath});
 }
 
 /// Model for a local file entry
@@ -56,15 +65,34 @@ class LocalFile {
   }
 }
 
+/// Data model for remote files being dropped
+class DraggedRemoteFiles {
+  final List<dynamic> files; // RemoteFile from mcp_client
+  final String serverName;
+  final String sourcePath;
+
+  DraggedRemoteFiles({
+    required this.files,
+    required this.serverName,
+    required this.sourcePath,
+  });
+}
+
 /// Local file browser widget - Finder-like design
 class LocalFileBrowser extends StatefulWidget {
   final Function(LocalFile)? onFileSelected;
   final Function(List<LocalFile>)? onFilesSelected;
+  /// Called when files should be uploaded to remote server
+  final Function(List<LocalFile> files)? onUploadFiles;
+  /// Called when remote files are dropped here for download
+  final Function(DraggedRemoteFiles remoteFiles, String localDestination)? onDownloadFiles;
 
   const LocalFileBrowser({
     super.key,
     this.onFileSelected,
     this.onFilesSelected,
+    this.onUploadFiles,
+    this.onDownloadFiles,
   });
 
   @override
@@ -78,6 +106,10 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
   bool _isLoading = false;
   String? _error;
   bool _showHidden = false;
+  bool _isDragOver = false;
+
+  /// Get current path for external access
+  String get currentPath => _currentPath;
 
   @override
   void initState() {
@@ -178,26 +210,52 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Column(
-      children: [
-        // Header with path breadcrumb
-        _buildHeader(colorScheme),
+    return DragTarget<DraggedRemoteFiles>(
+      onWillAcceptWithDetails: (details) {
+        setState(() => _isDragOver = true);
+        return true;
+      },
+      onLeave: (data) {
+        setState(() => _isDragOver = false);
+      },
+      onAcceptWithDetails: (details) {
+        setState(() => _isDragOver = false);
+        // Handle dropped remote files
+        widget.onDownloadFiles?.call(details.data, _currentPath);
+      },
+      builder: (context, candidateData, rejectedData) {
+        return Container(
+          decoration: BoxDecoration(
+            border: _isDragOver
+                ? Border.all(color: colorScheme.primary, width: 2)
+                : null,
+            color: _isDragOver
+                ? colorScheme.primaryContainer.withOpacity(0.1)
+                : null,
+          ),
+          child: Column(
+            children: [
+              // Header with path breadcrumb
+              _buildHeader(colorScheme),
 
-        // Column headers
-        _buildColumnHeaders(colorScheme),
+              // Column headers
+              _buildColumnHeaders(colorScheme),
 
-        // File list
-        Expanded(
-          child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? _buildErrorView(colorScheme)
-                  : _buildFileList(colorScheme),
-        ),
+              // File list
+              Expanded(
+                child: _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _error != null
+                        ? _buildErrorView(colorScheme)
+                        : _buildFileList(colorScheme),
+              ),
 
-        // Status bar
-        _buildStatusBar(colorScheme),
-      ],
+              // Status bar
+              _buildStatusBar(colorScheme),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -364,70 +422,120 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
   }
 
   Widget _buildFileRow(LocalFile file, bool isSelected, ColorScheme colorScheme) {
-    return GestureDetector(
-      onSecondaryTapDown: (details) {
-        // Stop propagation to prevent parent context menu from showing
-        _showFileContextMenu(context, details.globalPosition, file);
-      },
-      behavior: HitTestBehavior.opaque,
-      child: InkWell(
-        onTap: () => _toggleSelection(file),
-        onDoubleTap: () => _openItem(file),
+    // Get selected files for drag, or just this file
+    final filesToDrag = _selectedFiles.isNotEmpty && _selectedFiles.contains(file.fullPath)
+        ? _files.where((f) => _selectedFiles.contains(f.fullPath)).toList()
+        : [file];
+
+    return Draggable<DraggedLocalFiles>(
+      data: DraggedLocalFiles(files: filesToDrag, sourcePath: _currentPath),
+      feedback: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(8),
         child: Container(
-          height: 24,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: isSelected ? colorScheme.primaryContainer.withOpacity(0.5) : null,
+            color: colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(8),
           ),
           child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Icon
-              SizedBox(
-                width: 24,
-                child: HugeIcon(
-                  icon: _getFileIcon(file),
-                  size: 16,
-                  color: _getFileIconColor(file, colorScheme),
-                ),
+              HugeIcon(
+                icon: filesToDrag.length > 1
+                    ? HugeIcons.strokeRoundedFiles01
+                    : _getFileIcon(file),
+                size: 16,
+                color: colorScheme.primary,
               ),
-              // Name
-              Expanded(
-                flex: 3,
-                child: Text(
-                  file.name,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: colorScheme.onSurface,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              // Date
-              SizedBox(
-                width: 100,
-                child: Text(
-                  file.formattedDate,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              // Size
-              SizedBox(
-                width: 70,
-                child: Text(
-                  file.formattedSize,
-                  textAlign: TextAlign.right,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
+              const SizedBox(width: 8),
+              Text(
+                filesToDrag.length > 1
+                    ? '${filesToDrag.length} items'
+                    : file.name,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ],
           ),
         ),
+      ),
+      childWhenDragging: Opacity(
+        opacity: 0.5,
+        child: _buildFileRowContent(file, isSelected, colorScheme),
+      ),
+      child: GestureDetector(
+        onSecondaryTapDown: (details) {
+          // Stop propagation to prevent parent context menu from showing
+          _showFileContextMenu(context, details.globalPosition, file);
+        },
+        behavior: HitTestBehavior.opaque,
+        child: InkWell(
+          onTap: () => _toggleSelection(file),
+          onDoubleTap: () => _openItem(file),
+          child: _buildFileRowContent(file, isSelected, colorScheme),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFileRowContent(LocalFile file, bool isSelected, ColorScheme colorScheme) {
+    return Container(
+      height: 24,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: isSelected ? colorScheme.primaryContainer.withOpacity(0.5) : null,
+      ),
+      child: Row(
+        children: [
+          // Icon
+          SizedBox(
+            width: 24,
+            child: HugeIcon(
+              icon: _getFileIcon(file),
+              size: 16,
+              color: _getFileIconColor(file, colorScheme),
+            ),
+          ),
+          // Name
+          Expanded(
+            flex: 3,
+            child: Text(
+              file.name,
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurface,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // Date
+          SizedBox(
+            width: 100,
+            child: Text(
+              file.formattedDate,
+              style: TextStyle(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          // Size
+          SizedBox(
+            width: 70,
+            child: Text(
+              file.formattedSize,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -435,6 +543,7 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
   /// Show context menu for a file
   void _showFileContextMenu(BuildContext context, Offset position, LocalFile file) async {
     final colorScheme = Theme.of(context).colorScheme;
+    final hasUploadCallback = widget.onUploadFiles != null;
 
     final result = await showMenu<LocalFileAction>(
       context: context,
@@ -460,6 +569,19 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
             ],
           ),
         ),
+        if (hasUploadCallback) ...[
+          const PopupMenuDivider(),
+          PopupMenuItem(
+            value: LocalFileAction.uploadToServer,
+            child: Row(
+              children: [
+                HugeIcon(icon: HugeIcons.strokeRoundedUpload02, size: 18, color: colorScheme.primary),
+                const SizedBox(width: 12),
+                Text('Upload to Server', style: TextStyle(color: colorScheme.primary)),
+              ],
+            ),
+          ),
+        ],
         const PopupMenuDivider(),
         PopupMenuItem(
           value: LocalFileAction.info,
@@ -580,6 +702,16 @@ class _LocalFileBrowserState extends State<LocalFileBrowser> {
       case LocalFileAction.openInFinder:
         if (file != null) {
           await _openInFinder(file);
+        }
+        break;
+
+      case LocalFileAction.uploadToServer:
+        if (file != null) {
+          // Get selected files or just this file
+          final filesToUpload = _selectedFiles.isNotEmpty && _selectedFiles.contains(file.fullPath)
+              ? _files.where((f) => _selectedFiles.contains(f.fullPath)).toList()
+              : [file];
+          widget.onUploadFiles?.call(filesToUpload);
         }
         break;
 

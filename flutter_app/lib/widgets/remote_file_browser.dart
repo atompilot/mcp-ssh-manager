@@ -6,6 +6,7 @@ import 'package:hugeicons/hugeicons.dart';
 
 import '../mcp/mcp_client.dart';
 import 'server_selector.dart';
+import 'local_file_browser.dart' show DraggedLocalFiles, DraggedRemoteFiles;
 
 /// Context menu action types
 enum FileAction {
@@ -30,6 +31,8 @@ class RemoteFileBrowser extends StatefulWidget {
   final Function(List<RemoteFile>, SshServer)? onFilesSelected;
   /// Called when file needs to be downloaded
   final Function(RemoteFile, SshServer, String fullPath)? onDownloadFile;
+  /// Called when local files are dropped here for upload
+  final Function(DraggedLocalFiles localFiles, String remoteDestination, SshServer server)? onUploadFiles;
 
   const RemoteFileBrowser({
     super.key,
@@ -38,6 +41,7 @@ class RemoteFileBrowser extends StatefulWidget {
     this.onFileSelected,
     this.onFilesSelected,
     this.onDownloadFile,
+    this.onUploadFiles,
   });
 
   @override
@@ -52,6 +56,13 @@ class _RemoteFileBrowserState extends State<RemoteFileBrowser> {
   bool _isLoading = false;
   String? _error;
   bool _showHidden = false;
+  bool _isDragOver = false;
+
+  /// Get current path for external access
+  String get currentPath => _currentPath;
+
+  /// Get selected server for external access
+  SshServer? get selectedServer => _selectedServer;
 
   // Convert SshServer list to ServerInfo list for the selector
   List<ServerInfo> get _serverInfos {
@@ -181,29 +192,55 @@ class _RemoteFileBrowserState extends State<RemoteFileBrowser> {
     }
 
     // Show file browser when server is selected
-    return Column(
-      children: [
-        // Connected server header with disconnect button
-        _buildConnectedServerHeader(colorScheme),
+    return DragTarget<DraggedLocalFiles>(
+      onWillAcceptWithDetails: (details) {
+        setState(() => _isDragOver = true);
+        return true;
+      },
+      onLeave: (data) {
+        setState(() => _isDragOver = false);
+      },
+      onAcceptWithDetails: (details) {
+        setState(() => _isDragOver = false);
+        // Handle dropped local files for upload
+        widget.onUploadFiles?.call(details.data, _currentPath, _selectedServer!);
+      },
+      builder: (context, candidateData, rejectedData) {
+        return Container(
+          decoration: BoxDecoration(
+            border: _isDragOver
+                ? Border.all(color: colorScheme.primary, width: 2)
+                : null,
+            color: _isDragOver
+                ? colorScheme.primaryContainer.withOpacity(0.1)
+                : null,
+          ),
+          child: Column(
+            children: [
+              // Connected server header with disconnect button
+              _buildConnectedServerHeader(colorScheme),
 
-        // Header with path breadcrumb
-        _buildHeader(colorScheme),
+              // Header with path breadcrumb
+              _buildHeader(colorScheme),
 
-        // Column headers
-        _buildColumnHeaders(colorScheme),
+              // Column headers
+              _buildColumnHeaders(colorScheme),
 
-        // File list
-        Expanded(
-          child: _isLoading
-              ? const Center(child: CupertinoActivityIndicator())
-              : _error != null
-                  ? _buildErrorView(colorScheme)
-                  : _buildFileList(colorScheme),
-        ),
+              // File list
+              Expanded(
+                child: _isLoading
+                    ? const Center(child: CupertinoActivityIndicator())
+                    : _error != null
+                        ? _buildErrorView(colorScheme)
+                        : _buildFileList(colorScheme),
+              ),
 
-        // Status bar
-        _buildStatusBar(colorScheme),
-      ],
+              // Status bar
+              _buildStatusBar(colorScheme),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -440,70 +477,125 @@ class _RemoteFileBrowserState extends State<RemoteFileBrowser> {
   }
 
   Widget _buildFileRow(RemoteFile file, bool isSelected, ColorScheme colorScheme) {
-    return GestureDetector(
-      onSecondaryTapDown: (details) {
-        // Stop propagation to prevent parent context menu from showing
-        _showFileContextMenu(context, details.globalPosition, file);
-      },
-      behavior: HitTestBehavior.opaque,
-      child: InkWell(
-        onTap: () => _toggleSelection(file),
-        onDoubleTap: () => _openItem(file),
+    // Get selected files for drag, or just this file
+    final key = '$_currentPath/${file.name}';
+    final filesToDrag = _selectedFiles.isNotEmpty && _selectedFiles.contains(key)
+        ? _files.where((f) => _selectedFiles.contains('$_currentPath/${f.name}')).toList()
+        : [file];
+
+    return Draggable<DraggedRemoteFiles>(
+      data: DraggedRemoteFiles(
+        files: filesToDrag,
+        serverName: _selectedServer!.name,
+        sourcePath: _currentPath,
+      ),
+      feedback: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(8),
         child: Container(
-          height: 24,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: isSelected ? colorScheme.primaryContainer.withOpacity(0.5) : null,
+            color: colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(8),
           ),
           child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // Icon
-              SizedBox(
-                width: 24,
-                child: HugeIcon(
-                  icon: _getFileIcon(file),
-                  size: 16,
-                  color: _getFileIconColor(file, colorScheme),
-                ),
+              HugeIcon(
+                icon: filesToDrag.length > 1
+                    ? HugeIcons.strokeRoundedFiles01
+                    : _getFileIcon(file),
+                size: 16,
+                color: colorScheme.primary,
               ),
-              // Name
-              Expanded(
-                flex: 3,
-                child: Text(
-                  file.name,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: colorScheme.onSurface,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              // Date
-              SizedBox(
-                width: 100,
-                child: Text(
-                  _formatDate(file.modified),
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              // Size
-              SizedBox(
-                width: 70,
-                child: Text(
-                  file.formattedSize,
-                  textAlign: TextAlign.right,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
+              const SizedBox(width: 8),
+              Text(
+                filesToDrag.length > 1
+                    ? '${filesToDrag.length} items'
+                    : file.name,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ],
           ),
         ),
+      ),
+      childWhenDragging: Opacity(
+        opacity: 0.5,
+        child: _buildFileRowContent(file, isSelected, colorScheme),
+      ),
+      child: GestureDetector(
+        onSecondaryTapDown: (details) {
+          // Stop propagation to prevent parent context menu from showing
+          _showFileContextMenu(context, details.globalPosition, file);
+        },
+        behavior: HitTestBehavior.opaque,
+        child: InkWell(
+          onTap: () => _toggleSelection(file),
+          onDoubleTap: () => _openItem(file),
+          child: _buildFileRowContent(file, isSelected, colorScheme),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFileRowContent(RemoteFile file, bool isSelected, ColorScheme colorScheme) {
+    return Container(
+      height: 24,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: isSelected ? colorScheme.primaryContainer.withOpacity(0.5) : null,
+      ),
+      child: Row(
+        children: [
+          // Icon
+          SizedBox(
+            width: 24,
+            child: HugeIcon(
+              icon: _getFileIcon(file),
+              size: 16,
+              color: _getFileIconColor(file, colorScheme),
+            ),
+          ),
+          // Name
+          Expanded(
+            flex: 3,
+            child: Text(
+              file.name,
+              style: TextStyle(
+                fontSize: 12,
+                color: colorScheme.onSurface,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // Date
+          SizedBox(
+            width: 100,
+            child: Text(
+              _formatDate(file.modified),
+              style: TextStyle(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          // Size
+          SizedBox(
+            width: 70,
+            child: Text(
+              file.formattedSize,
+              textAlign: TextAlign.right,
+              style: TextStyle(
+                fontSize: 11,
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
