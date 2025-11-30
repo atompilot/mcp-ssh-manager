@@ -7,6 +7,7 @@ import '../providers/settings_provider.dart';
 import '../providers/transfer_provider.dart';
 import '../services/embedded_server_service.dart';
 import '../services/file_opener_service.dart';
+import '../services/file_sync_service.dart';
 import '../widgets/advanced_settings_dialog.dart';
 import '../widgets/connection_dialog.dart';
 import '../widgets/local_file_browser.dart';
@@ -37,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // Auto-connect state
   final EmbeddedServerService _serverService = EmbeddedServerService();
   final FileOpenerService _fileOpenerService = FileOpenerService();
+  FileSyncService? _fileSyncService;
   StartupState _startupState = StartupState.initializing;
   String? _startupError;
   String _startupMessage = 'Initializing...';
@@ -51,7 +53,48 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _serverService.dispose();
+    _fileSyncService?.dispose();
     super.dispose();
+  }
+
+  void _initFileSyncService(McpClient client) {
+    _fileSyncService = FileSyncService(client);
+    _fileSyncService!.onSyncStart = (fileName, success, error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 10),
+                Text('Syncing $fileName...'),
+              ],
+            ),
+            duration: const Duration(seconds: 1),
+          ),
+        );
+      }
+    };
+    _fileSyncService!.onSyncComplete = (fileName, success, error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              success
+                  ? 'Synced $fileName to server'
+                  : 'Failed to sync $fileName: $error',
+            ),
+            backgroundColor: success ? Colors.green : Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    };
   }
 
   Future<void> _autoStartAndConnect() async {
@@ -648,11 +691,23 @@ class _HomeScreenState extends State<HomeScreen> {
     // Hide loading snackbar
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
-    if (result.success) {
+    if (result.success && result.localPath != null) {
+      // Initialize sync service if needed
+      if (_fileSyncService == null) {
+        _initFileSyncService(connectionProvider.client);
+      }
+
+      // Start watching the file for changes
+      _fileSyncService!.watchFile(
+        localPath: result.localPath!,
+        remotePath: remotePath,
+        serverName: server.name,
+      );
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Opened $fileName with ${editor.name}'),
-          duration: const Duration(seconds: 2),
+          content: Text('Opened $fileName - changes will sync automatically'),
+          duration: const Duration(seconds: 3),
         ),
       );
     } else {
