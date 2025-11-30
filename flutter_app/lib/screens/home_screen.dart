@@ -4,11 +4,21 @@ import 'package:provider/provider.dart';
 import '../providers/connection_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/transfer_provider.dart';
+import '../services/embedded_server_service.dart';
 import '../widgets/connection_dialog.dart';
 import '../widgets/server_sidebar.dart';
 import '../widgets/file_browser_panel.dart';
 import '../widgets/settings_dialog.dart';
 import '../widgets/transfer_panel.dart';
+
+/// Startup state for the app
+enum StartupState {
+  initializing,
+  startingServer,
+  connecting,
+  ready,
+  error,
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,10 +31,86 @@ class _HomeScreenState extends State<HomeScreen> {
   TransferProvider? _transferProvider;
   bool _showTransferPanel = true;
 
+  // Auto-connect state
+  final EmbeddedServerService _serverService = EmbeddedServerService();
+  StartupState _startupState = StartupState.initializing;
+  String? _startupError;
+  String _startupMessage = 'Initializing...';
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-start server and connect
+    _autoStartAndConnect();
+  }
+
+  @override
+  void dispose() {
+    _serverService.dispose();
+    super.dispose();
+  }
+
+  Future<void> _autoStartAndConnect() async {
+    final connectionProvider = context.read<ConnectionProvider>();
+
+    try {
+      // Step 1: Start embedded server
+      setState(() {
+        _startupState = StartupState.startingServer;
+        _startupMessage = 'Starting MCP server...';
+      });
+
+      final serverStarted = await _serverService.start();
+      if (!serverStarted) {
+        throw Exception('Failed to start MCP server');
+      }
+
+      // Small delay to ensure server is fully ready
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // Step 2: Connect to server
+      setState(() {
+        _startupState = StartupState.connecting;
+        _startupMessage = 'Connecting...';
+      });
+
+      await connectionProvider.connect(_serverService.serverUrl);
+
+      // Step 3: Ready
+      setState(() {
+        _startupState = StartupState.ready;
+      });
+    } catch (e) {
+      print('[HomeScreen] Auto-connect error: $e');
+      setState(() {
+        _startupState = StartupState.error;
+        _startupError = e.toString();
+      });
+    }
+  }
+
+  Future<void> _retry() async {
+    setState(() {
+      _startupState = StartupState.initializing;
+      _startupError = null;
+    });
+    await _autoStartAndConnect();
+  }
+
   @override
   Widget build(BuildContext context) {
     final connectionProvider = context.watch<ConnectionProvider>();
     final colorScheme = Theme.of(context).colorScheme;
+
+    // Show splash screen during startup
+    if (_startupState != StartupState.ready && _startupState != StartupState.error) {
+      return _buildSplashScreen(context);
+    }
+
+    // Show error screen if startup failed
+    if (_startupState == StartupState.error) {
+      return _buildErrorScreen(context);
+    }
 
     // Initialize transfer provider when connected
     if (connectionProvider.isConnected && _transferProvider == null) {
@@ -43,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Expanded(
             child: connectionProvider.isConnected
                 ? _buildMainContent(context, connectionProvider)
-                : _buildWelcomeScreen(context, connectionProvider),
+                : _buildDisconnectedScreen(context, connectionProvider),
           ),
 
           // Transfer panel
@@ -52,6 +138,160 @@ class _HomeScreenState extends State<HomeScreen> {
               value: _transferProvider!,
               child: const TransferPanel(),
             ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSplashScreen(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              colorScheme.primaryContainer,
+              colorScheme.surface,
+            ],
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // App icon
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.folder_shared,
+                  size: 64,
+                  color: colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 32),
+              Text(
+                'MCP File Manager',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 48),
+              SizedBox(
+                width: 200,
+                child: LinearProgressIndicator(
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _startupMessage,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorScreen(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: 64,
+              color: colorScheme.error,
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Failed to Start',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                color: colorScheme.onSurface,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              constraints: const BoxConstraints(maxWidth: 400),
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                _startupError ?? 'Unknown error',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: _retry,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+                const SizedBox(width: 16),
+                OutlinedButton.icon(
+                  onPressed: () => _showConnectionDialog(context),
+                  icon: const Icon(Icons.settings),
+                  label: const Text('Manual Connect'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDisconnectedScreen(
+      BuildContext context, ConnectionProvider connectionProvider) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.cloud_off,
+            size: 64,
+            color: colorScheme.onSurfaceVariant.withOpacity(0.5),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Disconnected',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              color: colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Connection to MCP server lost',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: _retry,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Reconnect'),
+          ),
         ],
       ),
     );
@@ -168,76 +408,6 @@ class _HomeScreenState extends State<HomeScreen> {
               }
             },
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWelcomeScreen(
-      BuildContext context, ConnectionProvider connectionProvider) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.cloud_outlined,
-            size: 80,
-            color: colorScheme.primary.withOpacity(0.5),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'MCP File Manager',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  color: colorScheme.onSurface,
-                ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Connect to MCP SSH Manager to browse remote servers',
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-          ),
-          const SizedBox(height: 32),
-          if (connectionProvider.isConnecting)
-            const CircularProgressIndicator()
-          else if (connectionProvider.error != null)
-            Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: colorScheme.errorContainer,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.error_outline, color: colorScheme.error),
-                      const SizedBox(width: 8),
-                      Text(
-                        connectionProvider.error!,
-                        style: TextStyle(color: colorScheme.onErrorContainer),
-                      ),
-                    ],
-                  ),
-                ),
-                FilledButton.icon(
-                  onPressed: () => _showConnectionDialog(context),
-                  icon: const Icon(Icons.link),
-                  label: const Text('Connect'),
-                ),
-              ],
-            )
-          else
-            FilledButton.icon(
-              onPressed: () => _showConnectionDialog(context),
-              icon: const Icon(Icons.link),
-              label: const Text('Connect to MCP Server'),
-            ),
         ],
       ),
     );
