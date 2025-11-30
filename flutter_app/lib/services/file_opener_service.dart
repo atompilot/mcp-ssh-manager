@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as path;
@@ -21,7 +22,7 @@ class FileOpenResult {
 
 /// Service for downloading remote files and opening them with an editor
 class FileOpenerService {
-  /// Download a remote file to local temp directory
+  /// Download a remote file to local temp directory using base64 encoding
   Future<FileOpenResult> downloadFile({
     required McpClient client,
     required String server,
@@ -29,6 +30,8 @@ class FileOpenerService {
     required String tempDir,
   }) async {
     try {
+      print('[FileOpener] Starting download of $remotePath from $server');
+
       // Create temp directory if it doesn't exist
       final dir = Directory(tempDir);
       if (!await dir.exists()) {
@@ -45,25 +48,37 @@ class FileOpenerService {
         await serverDir.create(recursive: true);
       }
 
-      // Download the file
-      final result = await client.downloadFile(
-        server: server,
-        remotePath: remotePath,
-        localPath: localPath,
+      // Read file content via ssh_execute with base64 encoding
+      print('[FileOpener] Executing base64 command...');
+      final result = await client.execute(
+        server,
+        'base64 "$remotePath"',
+        timeout: 60000,
       );
+      print('[FileOpener] Command completed with code ${result.code}');
 
-      if (result['success'] == true) {
-        return FileOpenResult(
-          success: true,
-          localPath: localPath,
-        );
-      } else {
+      if (result.code != 0) {
+        print('[FileOpener] Error: ${result.stderr}');
         return FileOpenResult(
           success: false,
-          error: result['error']?.toString() ?? 'Download failed',
+          error: 'Failed to read file: ${result.stderr}',
         );
       }
+
+      // Decode base64 and write to local file
+      print('[FileOpener] Decoding base64 (${result.stdout.length} chars)...');
+      final base64Content = result.stdout.trim().replaceAll('\n', '');
+      final bytes = base64Decode(base64Content);
+      final file = File(localPath);
+      await file.writeAsBytes(bytes);
+      print('[FileOpener] File saved to $localPath (${bytes.length} bytes)');
+
+      return FileOpenResult(
+        success: true,
+        localPath: localPath,
+      );
     } catch (e) {
+      print('[FileOpener] Exception: $e');
       return FileOpenResult(
         success: false,
         error: e.toString(),
@@ -77,51 +92,57 @@ class FileOpenerService {
     required EditorInfo editor,
   }) async {
     try {
+      print('[FileOpener] Opening $filePath with ${editor.name}');
+      print('[FileOpener] Editor macCommand: ${editor.macCommand}, macPath: ${editor.macPath}');
       if (Platform.isMacOS) {
-        return await _openOnMac(filePath, editor);
+        final result = await _openOnMac(filePath, editor);
+        print('[FileOpener] Open result: $result');
+        return result;
       }
       // Add Linux/Windows support here if needed
+      print('[FileOpener] Platform not supported');
       return false;
     } catch (e) {
+      print('[FileOpener] Exception opening file: $e');
       return false;
     }
   }
 
   Future<bool> _openOnMac(String filePath, EditorInfo editor) async {
     try {
-      // First try using the command if available
-      if (editor.macCommand.isNotEmpty) {
-        final cmdParts = editor.macCommand.split(' ');
+      // On macOS sandboxed apps, we must use 'open' command
+      // Direct execution of commands like 'code' won't work due to sandbox restrictions
 
-        if (cmdParts.length == 1) {
-          // Simple command like 'code' or 'cursor'
-          final result = await Process.run(cmdParts[0], [filePath]);
-          if (result.exitCode == 0) {
-            return true;
-          }
-        } else {
-          // Complex command like 'open -a TextEdit'
-          final args = [...cmdParts.skip(1), filePath];
-          final result = await Process.run(cmdParts[0], args);
-          if (result.exitCode == 0) {
-            return true;
-          }
+      // First try: open with the app bundle
+      if (editor.macPath.isNotEmpty) {
+        print('[FileOpener] Trying open -a with app: ${editor.macPath}');
+        final appName = path.basenameWithoutExtension(editor.macPath);
+        final result = await Process.run('open', ['-a', appName, filePath]);
+        print('[FileOpener] open -a $appName result: exitCode=${result.exitCode}, stderr=${result.stderr}');
+        if (result.exitCode == 0) {
+          return true;
         }
       }
 
-      // Fallback: use 'open -a' with the app path
-      if (editor.macPath.isNotEmpty) {
-        final appName = path.basenameWithoutExtension(editor.macPath);
-        final result = await Process.run('open', ['-a', appName, filePath]);
+      // Second try: use the macCommand if it starts with 'open'
+      if (editor.macCommand.isNotEmpty && editor.macCommand.startsWith('open')) {
+        final cmdParts = editor.macCommand.split(' ');
+        final args = [...cmdParts.skip(1), filePath];
+        print('[FileOpener] Trying macCommand: open ${args.join(' ')}');
+        final result = await Process.run('open', args);
+        print('[FileOpener] macCommand result: exitCode=${result.exitCode}');
         if (result.exitCode == 0) {
           return true;
         }
       }
 
       // Last resort: just use 'open' to open with default app
+      print('[FileOpener] Trying default open');
       final result = await Process.run('open', [filePath]);
+      print('[FileOpener] Default open result: exitCode=${result.exitCode}');
       return result.exitCode == 0;
     } catch (e) {
+      print('[FileOpener] _openOnMac exception: $e');
       return false;
     }
   }
@@ -134,6 +155,8 @@ class FileOpenerService {
     required String tempDir,
     required EditorInfo editor,
   }) async {
+    print('[FileOpener] downloadAndOpen called for $remotePath');
+
     // Download the file
     final downloadResult = await downloadFile(
       client: client,
@@ -142,15 +165,20 @@ class FileOpenerService {
       tempDir: tempDir,
     );
 
+    print('[FileOpener] Download result: success=${downloadResult.success}, path=${downloadResult.localPath}');
+
     if (!downloadResult.success) {
+      print('[FileOpener] Download failed: ${downloadResult.error}');
       return downloadResult;
     }
 
     // Open with editor
+    print('[FileOpener] About to call openWithEditor...');
     final opened = await openWithEditor(
       filePath: downloadResult.localPath!,
       editor: editor,
     );
+    print('[FileOpener] openWithEditor returned: $opened');
 
     if (opened) {
       return downloadResult;

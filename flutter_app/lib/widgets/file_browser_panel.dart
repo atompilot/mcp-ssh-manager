@@ -7,6 +7,7 @@ import '../providers/file_browser_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/transfer_provider.dart';
 import '../services/file_opener_service.dart';
+import '../services/file_watcher_service.dart';
 import 'file_list_view.dart';
 import 'new_folder_dialog.dart';
 import 'rename_dialog.dart';
@@ -29,6 +30,7 @@ class _FileBrowserPanelState extends State<FileBrowserPanel> {
   late FileBrowserProvider _provider;
   late TextEditingController _pathController;
   final FileOpenerService _fileOpenerService = FileOpenerService();
+  late FileWatcherService _fileWatcherService;
   bool _isOpeningFile = false;
 
   @override
@@ -40,8 +42,67 @@ class _FileBrowserPanelState extends State<FileBrowserPanel> {
       initialPath: widget.server.defaultDir ?? '~',
     );
     _pathController = TextEditingController(text: _provider.currentPath);
+    _fileWatcherService = FileWatcherService(widget.client);
+    _fileWatcherService.onSyncStatusChanged = _onSyncStatusChanged;
 
     _provider.addListener(_updatePathController);
+  }
+
+  void _onSyncStatusChanged(String fileName, SyncStatus status, String? error) {
+    if (!mounted) return;
+
+    switch (status) {
+      case SyncStatus.syncing:
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 12),
+                Text('Syncing $fileName...'),
+              ],
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        break;
+      case SyncStatus.success:
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.cloud_done, color: Colors.white, size: 18),
+                const SizedBox(width: 12),
+                Text('$fileName synced to server'),
+              ],
+            ),
+            backgroundColor: Colors.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        break;
+      case SyncStatus.error:
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error, color: Colors.white, size: 18),
+                const SizedBox(width: 12),
+                Expanded(child: Text('Sync failed: ${error ?? "Unknown error"}')),
+              ],
+            ),
+            backgroundColor: Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+        break;
+    }
   }
 
   void _updatePathController() {
@@ -69,6 +130,7 @@ class _FileBrowserPanelState extends State<FileBrowserPanel> {
   void dispose() {
     _provider.removeListener(_updatePathController);
     _pathController.dispose();
+    _fileWatcherService.dispose();
     super.dispose();
   }
 
@@ -597,11 +659,25 @@ class _FileBrowserPanelState extends State<FileBrowserPanel> {
       if (context.mounted) {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
 
-        if (result.success) {
+        if (result.success && result.localPath != null) {
+          // Start watching the file for changes
+          final remotePath = provider.getFullPath(file.name);
+          _fileWatcherService.watchFile(
+            localPath: result.localPath!,
+            remotePath: remotePath,
+            server: widget.server.name,
+          );
+
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Opened ${file.name} with ${editor.name}'),
-              duration: const Duration(seconds: 2),
+              content: Row(
+                children: [
+                  const Icon(Icons.sync, color: Colors.white, size: 18),
+                  const SizedBox(width: 8),
+                  Text('Opened ${file.name} - changes will sync automatically'),
+                ],
+              ),
+              duration: const Duration(seconds: 3),
             ),
           );
         } else {
