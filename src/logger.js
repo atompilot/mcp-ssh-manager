@@ -74,13 +74,19 @@ class Logger {
    */
   maskSensitive(str) {
     if (!str) return str;
-    return str
-      .replace(/-p'[^']*'/g, "-p'***'") // MySQL -p'password'
-      .replace(/--password\s+'[^']*'/g, "--password '***'") // MongoDB/pg --password 'pass'
-      .replace(/PGPASSWORD='[^']*'/g, "PGPASSWORD='***'") // PostgreSQL env var
-      .replace(/PGPASSFILE=[^\s;]*/g, 'PGPASSFILE=***') // PostgreSQL passfile
-      .replace(/echo\s+"[^"]*"\s+\|\s+sudo/g, 'echo "***" | sudo') // sudo password pipe
-      .replace(/printf '[^']*' '[^']*' > \$MCPTMPF/g, "printf '***' '***' > $MCPTMPF"); // cred file write
+    return (
+      str
+        .replace(/-p'[^']*'/g, "-p'***'") // MySQL -p'password'
+        .replace(/--password\s+'[^']*'/g, "--password '***'") // MongoDB --password 'pass'
+        .replace(/PGPASSWORD='[^']*'/g, "PGPASSWORD='***'") // PostgreSQL env var
+        .replace(/PGPASSFILE=[^\s;]*/g, 'PGPASSFILE=***') // PostgreSQL passfile
+        // sudo password via printf: use non-greedy match to handle shell-quoted passwords
+        // that may contain escaped single quotes (e.g. 'pass'\''word')
+        .replace(/printf\s+'%s\\n'\s+.+?\s*\|\s*sudo/g, "printf '%s\\n' '***' | sudo")
+        // credential file writes (MySQL --defaults-extra-file and PostgreSQL PGPASSFILE):
+        // match from printf up to > "$MCPTMPF" using non-greedy match
+        .replace(/printf\s+'[^']+'\s+.+?\s*>\s*"?\$MCPTMPF"?/g, "printf '***' '***' > \"$MCPTMPF\"")
+    );
   }
 
   /**

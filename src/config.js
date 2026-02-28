@@ -1,11 +1,14 @@
 // Configuration constants for MCP SSH Manager
 
 /**
- * Parse an integer from a string, returning `defaultVal` if the result is NaN.
+ * Parse an integer from a string, returning `defaultVal` if the result is NaN
+ * or falls below `min` (defaults to 1 to reject zero and negative values that
+ * could disable limits or cause unexpected behaviour).
  */
-function safeParseInt(val, defaultVal) {
+function safeParseInt(val, defaultVal, min = 1) {
   const n = parseInt(val, 10);
-  return isNaN(n) ? defaultVal : n;
+  if (isNaN(n) || n < min) return defaultVal;
+  return n;
 }
 
 // Output limits to prevent Claude Code crashes

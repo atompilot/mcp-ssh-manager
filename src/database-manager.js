@@ -15,6 +15,22 @@ function shellSingleQuote(s) {
 }
 
 /**
+ * Escape a MySQL identifier (database/table name) for backtick quoting.
+ * Prevents SQL injection when names are embedded in inline SQL strings.
+ */
+function escapeMySQLIdentifier(name) {
+  return '`' + name.replace(/`/g, '``') + '`';
+}
+
+/**
+ * Escape a string literal for safe embedding in SQL single quotes.
+ * Uses standard SQL escape doubling of single quotes (works in both MySQL and PostgreSQL).
+ */
+function escapeSQLStringLiteral(s) {
+  return "'" + s.replace(/'/g, "''") + "'";
+}
+
+/**
  * Escape a field for use in a PostgreSQL .pgpass file.
  * pgpass fields use ':' as separator; backslash-escape ':' and '\'.
  */
@@ -31,9 +47,13 @@ function escapePgPassField(s) {
  */
 function withMySQLCredFile(password, toolCmd) {
   const escapedPass = shellSingleQuote(password);
-  // Insert --defaults-extra-file right after the tool name (first word)
-  const [tool, ...rest] = toolCmd.split(' ');
-  const wrappedCmd = `${tool} --defaults-extra-file="$MCPTMPF" ${rest.join(' ')}`;
+  // Insert --defaults-extra-file right after the tool name (first word).
+  // Use indexOf to preserve any multi-space sequences in the rest of the command.
+  const spaceIdx = toolCmd.indexOf(' ');
+  const wrappedCmd =
+    spaceIdx >= 0
+      ? `${toolCmd.slice(0, spaceIdx)} --defaults-extra-file="$MCPTMPF" ${toolCmd.slice(spaceIdx + 1)}`
+      : `${toolCmd} --defaults-extra-file="$MCPTMPF"`;
   return [
     `MCPTMPF=$(mktemp /tmp/.mcp_my_XXXXXX)`,
     `chmod 600 "$MCPTMPF"`,
@@ -252,7 +272,7 @@ export function buildMongoDBRestoreCommand(options) {
       : `--host ${host} --port ${port}`;
 
   if (inputPath.endsWith('.tar.gz')) {
-    const extractDir = inputPath.replace('.tar.gz', '');
+    const extractDir = inputPath.slice(0, -'.tar.gz'.length);
     return (
       `tar -xzf "${inputPath}" -C "$(dirname ${inputPath})" && ` +
       `mongorestore ${drop ? '--drop ' : ''}${uriFlag} "${extractDir}"` +
@@ -288,7 +308,7 @@ export function buildMySQLListTablesCommand(options) {
   if (user) base += ` -u${user}`;
   if (host) base += ` -h ${host}`;
   if (port) base += ` -P ${port}`;
-  base += ` -e "USE ${database}; SHOW TABLES;" | tail -n +2`;
+  base += ` -e "USE ${escapeMySQLIdentifier(database)}; SHOW TABLES;" | tail -n +2`;
 
   return password ? withMySQLCredFile(password, base) : base;
 }
@@ -453,8 +473,12 @@ export function isSafeQuery(query) {
   }
 
   // Block dangerous keywords using word boundaries to avoid false positives on column names
+  // UNION is blocked to prevent data-exfiltration via UNION-based injection.
+  // INTO is blocked to prevent SELECT INTO FILE attacks.
   if (
-    /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE)\b/i.test(trimmed)
+    /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE|UNION|INTO)\b/i.test(
+      trimmed
+    )
   ) {
     return false;
   }
@@ -508,7 +532,7 @@ export function buildEstimateSizeCommand(type, database, options = {}) {
       if (user) base += ` -u${user}`;
       if (host) base += ` -h ${host}`;
       if (effectivePort) base += ` -P ${effectivePort}`;
-      base += ` -e "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema='${database}';" | tail -n 1`;
+      base += ` -e "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema=${escapeSQLStringLiteral(database)};" | tail -n 1`;
       return password ? withMySQLCredFile(password, base) : base;
     }
 
@@ -518,7 +542,7 @@ export function buildEstimateSizeCommand(type, database, options = {}) {
       if (host) base += ` -h ${host}`;
       if (effectivePort) base += ` -p ${effectivePort}`;
       base += ` -d ${database}`;
-      base += ` -t -c "SELECT pg_database_size('${database}');" | sed 's/^[ \\t]*//'`;
+      base += ` -t -c "SELECT pg_database_size(${escapeSQLStringLiteral(database)});" | sed 's/^[ \\t]*//'`;
       return password ? withPGPassFile(host, effectivePort, database, user, password, base) : base;
     }
 

@@ -6,11 +6,12 @@ import crypto from 'crypto';
  */
 
 /**
- * Escape a string for safe embedding inside a double-quoted shell argument.
- * Replaces \, ", `, and $ with their escaped equivalents.
+ * Wrap a string in single quotes for safe shell argument embedding.
+ * Single quotes prevent all shell interpretation; internal single quotes
+ * are handled via the '"'"' technique.
  */
-function escapeDoubleQuoteShell(str) {
-  return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+function shellSingleQuote(str) {
+  return "'" + str.replace(/'/g, "'\\''") + "'";
 }
 
 /**
@@ -62,12 +63,14 @@ export function buildDeploymentStrategy(remotePath, options = {}) {
   }
 
   // Step 3: Copy from temp to final location
+  // Use printf '%s\n' with single-quote escaping to avoid echo interpretation issues.
   const sudoPrefix = sudoPassword
-    ? `echo "${escapeDoubleQuoteShell(sudoPassword)}" | sudo -S `
+    ? `printf '%s\\n' ${shellSingleQuote(sudoPassword)} | sudo -S `
     : '';
 
+  // Use 'sudo ' fallback when sudo is needed but no password is provided (e.g. NOPASSWD sudoers).
   const copyCmd = needsSudo
-    ? `${sudoPrefix}cp {{tempFile}} "${remotePath}"`
+    ? `${sudoPrefix || 'sudo '}cp {{tempFile}} "${remotePath}"`
     : `cp {{tempFile}} "${remotePath}"`;
 
   strategy.steps.push({
@@ -172,7 +175,7 @@ export function createBatchDeployScript(deployments) {
   // Cleanup all temp files at the end
   script.push('# Cleanup temporary files');
   deployments.forEach((deploy) => {
-    script.push(`rm -f ${deploy.tempFile}`);
+    script.push(`rm -f "${deploy.tempFile}"`);
   });
 
   return script.join('\n');

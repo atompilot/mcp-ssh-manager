@@ -94,7 +94,10 @@ class SSHManager {
           const port = this.config.port || 22;
           const host = this.config.host;
 
-          // Compute SHA256 fingerprint from the raw key buffer provided by ssh2
+          // Despite the misleading name "hashedKey", ssh2 v1.x passes the RAW
+          // public key Buffer here (not a pre-hashed value) when no hostHash
+          // option is configured. SHA256 of this buffer matches what
+          // ssh-keygen -l -E sha256 and our getHostKeyFingerprint() produce.
           const fingerprint = crypto.createHash('sha256').update(hashedKey).digest('base64');
 
           // Check MCP fingerprint store first (takes precedence over system known_hosts)

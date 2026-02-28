@@ -138,28 +138,37 @@ export function getCurrentHostKey(host, port = 22) {
 }
 
 /**
- * Load the MCP fingerprint store from disk
+ * Load the MCP fingerprint store from disk.
+ * Distinguishes "file not found" (normal, returns {}) from parse errors (log as error).
+ * Uses a single readFileSync wrapped in try/catch to avoid a TOCTOU race between
+ * existsSync and readFileSync.
  */
 function loadFingerprintStore() {
   try {
-    if (fs.existsSync(FINGERPRINT_STORE_PATH)) {
-      return JSON.parse(fs.readFileSync(FINGERPRINT_STORE_PATH, 'utf8'));
-    }
-  } catch {
-    // Ignore parse errors, start fresh
+    return JSON.parse(fs.readFileSync(FINGERPRINT_STORE_PATH, 'utf8'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    // Log corruption so the operator can investigate; do NOT silently swallow
+    logger.error('Fingerprint store is corrupted – starting fresh. Verify host keys manually.', {
+      path: FINGERPRINT_STORE_PATH,
+      error: err.message,
+    });
+    return {};
   }
-  return {};
 }
 
 /**
- * Save the MCP fingerprint store to disk
+ * Save the MCP fingerprint store to disk using an atomic write-then-rename
+ * to prevent partial writes from corrupting the store.
  */
 function saveFingerprintStore(store) {
   const sshDir = path.dirname(FINGERPRINT_STORE_PATH);
   if (!fs.existsSync(sshDir)) {
     fs.mkdirSync(sshDir, { mode: 0o700, recursive: true });
   }
-  fs.writeFileSync(FINGERPRINT_STORE_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
+  const tmpPath = FINGERPRINT_STORE_PATH + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), { mode: 0o600 });
+  fs.renameSync(tmpPath, FINGERPRINT_STORE_PATH);
 }
 
 /**
