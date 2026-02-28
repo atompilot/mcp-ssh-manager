@@ -3,18 +3,90 @@
  * Provides database operations for MySQL, PostgreSQL, and MongoDB
  */
 
+// ──────────────────────────────────────────────────────────────
+// Credential-safe command wrappers
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * Escape a string for embedding inside single quotes in shell.
+ */
+function shellSingleQuote(s) {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Escape a field for use in a PostgreSQL .pgpass file.
+ * pgpass fields use ':' as separator; backslash-escape ':' and '\'.
+ */
+function escapePgPassField(s) {
+  return s.replace(/\\/g, '\\\\').replace(/:/g, '\\:');
+}
+
+/**
+ * Wrap a MySQL/mysqldump/mysql client command with a temp credentials file.
+ * Avoids exposing the password in `ps aux` output.
+ * The `toolCmd` must NOT already include a -p or --password flag.
+ *
+ * Uses `trap` for cleanup so it works correctly with pipes and on failure.
+ */
+function withMySQLCredFile(password, toolCmd) {
+  const escapedPass = shellSingleQuote(password);
+  // Insert --defaults-extra-file right after the tool name (first word)
+  const [tool, ...rest] = toolCmd.split(' ');
+  const wrappedCmd = `${tool} --defaults-extra-file="$MCPTMPF" ${rest.join(' ')}`;
+  return [
+    `MCPTMPF=$(mktemp /tmp/.mcp_my_XXXXXX)`,
+    `chmod 600 "$MCPTMPF"`,
+    `printf '[client]\\npassword=%s\\n' ${escapedPass} > "$MCPTMPF"`,
+    `trap 'rm -f "$MCPTMPF"' EXIT INT TERM`,
+    wrappedCmd,
+  ].join('; ');
+}
+
+/**
+ * Wrap a PostgreSQL command with a temp .pgpass file.
+ * Uses PGPASSFILE to avoid exposing the password in `ps aux` or /proc/self/environ.
+ * The `toolCmd` must NOT already include a PGPASSWORD/PGPASSFILE prefix.
+ *
+ * Uses `trap` for cleanup so it works correctly with pipes and on failure.
+ */
+function withPGPassFile(host, port, database, user, password, toolCmd) {
+  const pgpassEntry = [host, String(port), database, user, password]
+    .map(escapePgPassField)
+    .join(':');
+  const escapedEntry = shellSingleQuote(pgpassEntry);
+  return [
+    `MCPTMPF=$(mktemp /tmp/.mcp_pg_XXXXXX)`,
+    `chmod 600 "$MCPTMPF"`,
+    `printf '%s\\n' ${escapedEntry} > "$MCPTMPF"`,
+    `trap 'rm -f "$MCPTMPF"' EXIT INT TERM`,
+    `PGPASSFILE="$MCPTMPF" ${toolCmd}`,
+  ].join('; ');
+}
+
+/**
+ * Build a MongoDB URI connection string.
+ * Using URI keeps credentials out of individual --password flags visible in `ps aux`.
+ */
+function buildMongoURI(host, port, user, password, database = '') {
+  const encodedUser = encodeURIComponent(user);
+  const encodedPass = encodeURIComponent(password);
+  const db = database ? `/${database}` : '';
+  return `mongodb://${encodedUser}:${encodedPass}@${host}:${port}${db}`;
+}
+
 // Supported database types
 export const DB_TYPES = {
   MYSQL: 'mysql',
   POSTGRESQL: 'postgresql',
-  MONGODB: 'mongodb'
+  MONGODB: 'mongodb',
 };
 
 // Default ports
 export const DB_PORTS = {
   mysql: 3306,
   postgresql: 5432,
-  mongodb: 27017
+  mongodb: 27017,
 };
 
 /**
@@ -29,30 +101,23 @@ export function buildMySQLDumpCommand(options) {
     port = 3306,
     outputFile,
     compress = true,
-    tables = null
+    tables = null,
   } = options;
 
-  let command = 'mysqldump';
-
-  if (user) command += ` -u${user}`;
-  if (password) command += ` -p'${password}'`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -P ${port}`;
-
-  command += ' --single-transaction --routines --triggers';
-  command += ` ${database}`;
-
-  if (tables && Array.isArray(tables)) {
-    command += ` ${tables.join(' ')}`;
-  }
-
+  let base = 'mysqldump';
+  if (user) base += ` -u${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -P ${port}`;
+  base += ' --single-transaction --routines --triggers';
+  base += ` ${database}`;
+  if (tables && Array.isArray(tables)) base += ` ${tables.join(' ')}`;
   if (compress) {
-    command += ` | gzip > "${outputFile}"`;
+    base += ` | gzip > "${outputFile}"`;
   } else {
-    command += ` > "${outputFile}"`;
+    base += ` > "${outputFile}"`;
   }
 
-  return command;
+  return password ? withMySQLCredFile(password, base) : base;
 }
 
 /**
@@ -67,39 +132,30 @@ export function buildPostgreSQLDumpCommand(options) {
     port = 5432,
     outputFile,
     compress = true,
-    tables = null
+    tables = null,
   } = options;
 
-  let command = '';
-  if (password) {
-    command = `PGPASSWORD='${password}' `;
-  }
-
-  command += 'pg_dump';
-  if (user) command += ` -U ${user}`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -p ${port}`;
-  command += ' --format=custom --clean --if-exists';
-
+  let base = 'pg_dump';
+  if (user) base += ` -U ${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -p ${port}`;
+  base += ' --format=custom --clean --if-exists';
   if (tables && Array.isArray(tables)) {
-    for (const table of tables) {
-      command += ` -t ${table}`;
-    }
+    for (const table of tables) base += ` -t ${table}`;
   }
-
-  command += ` ${database}`;
-
+  base += ` ${database}`;
   if (compress) {
-    command += ` | gzip > "${outputFile}"`;
+    base += ` | gzip > "${outputFile}"`;
   } else {
-    command += ` > "${outputFile}"`;
+    base += ` > "${outputFile}"`;
   }
 
-  return command;
+  return password ? withPGPassFile(host, port, database, user, password, base) : base;
 }
 
 /**
  * Build MongoDB dump command
+ * Note: mongodump URI puts credentials in command args; this is the MongoDB-standard approach.
  */
 export function buildMongoDBDumpCommand(options) {
   const {
@@ -110,22 +166,21 @@ export function buildMongoDBDumpCommand(options) {
     port = 27017,
     outputDir,
     compress = true,
-    collections = null
+    collections = null,
   } = options;
 
   let command = 'mongodump';
-  if (host) command += ` --host ${host}`;
-  if (port) command += ` --port ${port}`;
-  if (user) command += ` --username ${user}`;
-  if (password) command += ` --password '${password}'`;
-  if (database) command += ` --db ${database}`;
-
-  if (collections && Array.isArray(collections)) {
-    for (const collection of collections) {
-      command += ` --collection ${collection}`;
-    }
+  if (user && password) {
+    command += ` --uri ${shellSingleQuote(buildMongoURI(host, port, user, password, database))}`;
+  } else {
+    if (host) command += ` --host ${host}`;
+    if (port) command += ` --port ${port}`;
+    if (database) command += ` --db ${database}`;
   }
 
+  if (collections && Array.isArray(collections)) {
+    for (const collection of collections) command += ` --collection ${collection}`;
+  }
   command += ` --out "${outputDir}"`;
 
   if (compress) {
@@ -140,65 +195,41 @@ export function buildMongoDBDumpCommand(options) {
  * Build MySQL import command
  */
 export function buildMySQLImportCommand(options) {
-  const {
-    database,
-    user,
-    password,
-    host = 'localhost',
-    port = 3306,
-    inputFile
-  } = options;
+  const { database, user, password, host = 'localhost', port = 3306, inputFile } = options;
 
-  let command = '';
+  const prefix = inputFile.endsWith('.gz')
+    ? `gunzip -c "${inputFile}" | `
+    : `cat "${inputFile}" | `;
 
-  if (inputFile.endsWith('.gz')) {
-    command = `gunzip -c "${inputFile}" | `;
-  } else {
-    command = `cat "${inputFile}" | `;
-  }
+  let base = 'mysql';
+  if (user) base += ` -u${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -P ${port}`;
+  base += ` ${database}`;
 
-  command += 'mysql';
-  if (user) command += ` -u${user}`;
-  if (password) command += ` -p'${password}'`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -P ${port}`;
-  command += ` ${database}`;
-
-  return command;
+  const mysqlCmd = password ? withMySQLCredFile(password, base) : base;
+  return `${prefix}${mysqlCmd}`;
 }
 
 /**
  * Build PostgreSQL import command
  */
 export function buildPostgreSQLImportCommand(options) {
-  const {
-    database,
-    user,
-    password,
-    host = 'localhost',
-    port = 5432,
-    inputFile
-  } = options;
+  const { database, user, password, host = 'localhost', port = 5432, inputFile } = options;
 
-  let command = '';
-  if (password) {
-    command = `PGPASSWORD='${password}' `;
-  }
+  let base = 'pg_restore';
+  if (user) base += ` -U ${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -p ${port}`;
+  base += ' --clean --if-exists';
+  base += ` -d ${database}`;
 
-  command += 'pg_restore';
-  if (user) command += ` -U ${user}`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -p ${port}`;
-  command += ' --clean --if-exists';
-  command += ` -d ${database}`;
+  const pgCmd = password ? withPGPassFile(host, port, database, user, password, base) : base;
 
   if (inputFile.endsWith('.gz')) {
-    command = `gunzip -c "${inputFile}" | ${command}`;
-  } else {
-    command += ` "${inputFile}"`;
+    return `gunzip -c "${inputFile}" | ${pgCmd}`;
   }
-
-  return command;
+  return `${pgCmd} "${inputFile}"`;
 }
 
 /**
@@ -212,33 +243,24 @@ export function buildMongoDBRestoreCommand(options) {
     host = 'localhost',
     port = 27017,
     inputPath,
-    drop = true
+    drop = true,
   } = options;
 
-  let command = '';
+  const uriFlag =
+    user && password
+      ? `--uri ${shellSingleQuote(buildMongoURI(host, port, user, password, database))}`
+      : `--host ${host} --port ${port}`;
 
   if (inputPath.endsWith('.tar.gz')) {
     const extractDir = inputPath.replace('.tar.gz', '');
-    command = `tar -xzf "${inputPath}" -C "$(dirname ${inputPath})" && `;
-    command += 'mongorestore';
-    if (drop) command += ' --drop';
-    if (host) command += ` --host ${host}`;
-    if (port) command += ` --port ${port}`;
-    if (user) command += ` --username ${user}`;
-    if (password) command += ` --password '${password}'`;
-    command += ` "${extractDir}"`;
-    command += ` && rm -rf "${extractDir}"`;
-  } else {
-    command = 'mongorestore';
-    if (drop) command += ' --drop';
-    if (host) command += ` --host ${host}`;
-    if (port) command += ` --port ${port}`;
-    if (user) command += ` --username ${user}`;
-    if (password) command += ` --password '${password}'`;
-    command += ` "${inputPath}"`;
+    return (
+      `tar -xzf "${inputPath}" -C "$(dirname ${inputPath})" && ` +
+      `mongorestore ${drop ? '--drop ' : ''}${uriFlag} "${extractDir}"` +
+      ` && rm -rf "${extractDir}"`
+    );
   }
 
-  return command;
+  return `mongorestore ${drop ? '--drop ' : ''}${uriFlag} "${inputPath}"`;
 }
 
 /**
@@ -247,14 +269,13 @@ export function buildMongoDBRestoreCommand(options) {
 export function buildMySQLListDatabasesCommand(options) {
   const { user, password, host = 'localhost', port = 3306 } = options;
 
-  let command = 'mysql';
-  if (user) command += ` -u${user}`;
-  if (password) command += ` -p'${password}'`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -P ${port}`;
-  command += ' -e "SHOW DATABASES;" | tail -n +2';
+  let base = 'mysql';
+  if (user) base += ` -u${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -P ${port}`;
+  base += ' -e "SHOW DATABASES;" | tail -n +2';
 
-  return command;
+  return password ? withMySQLCredFile(password, base) : base;
 }
 
 /**
@@ -263,14 +284,13 @@ export function buildMySQLListDatabasesCommand(options) {
 export function buildMySQLListTablesCommand(options) {
   const { database, user, password, host = 'localhost', port = 3306 } = options;
 
-  let command = 'mysql';
-  if (user) command += ` -u${user}`;
-  if (password) command += ` -p'${password}'`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -P ${port}`;
-  command += ` -e "USE ${database}; SHOW TABLES;" | tail -n +2`;
+  let base = 'mysql';
+  if (user) base += ` -u${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -P ${port}`;
+  base += ` -e "USE ${database}; SHOW TABLES;" | tail -n +2`;
 
-  return command;
+  return password ? withMySQLCredFile(password, base) : base;
 }
 
 /**
@@ -279,18 +299,14 @@ export function buildMySQLListTablesCommand(options) {
 export function buildPostgreSQLListDatabasesCommand(options) {
   const { user, password, host = 'localhost', port = 5432 } = options;
 
-  let command = '';
-  if (password) {
-    command = `PGPASSWORD='${password}' `;
-  }
+  let base = 'psql';
+  if (user) base += ` -U ${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -p ${port}`;
+  base +=
+    " -t -c \"SELECT datname FROM pg_database WHERE datistemplate = false;\" | sed '/^$/d' | sed 's/^[ \\t]*//'";
 
-  command += 'psql';
-  if (user) command += ` -U ${user}`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -p ${port}`;
-  command += ' -t -c "SELECT datname FROM pg_database WHERE datistemplate = false;" | sed \'/^$/d\' | sed \'s/^[ \\t]*//\'';
-
-  return command;
+  return password ? withPGPassFile(host, port, '*', user, password, base) : base;
 }
 
 /**
@@ -299,19 +315,15 @@ export function buildPostgreSQLListDatabasesCommand(options) {
 export function buildPostgreSQLListTablesCommand(options) {
   const { database, user, password, host = 'localhost', port = 5432 } = options;
 
-  let command = '';
-  if (password) {
-    command = `PGPASSWORD='${password}' `;
-  }
+  let base = 'psql';
+  if (user) base += ` -U ${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -p ${port}`;
+  base += ` -d ${database}`;
+  base +=
+    " -t -c \"SELECT tablename FROM pg_tables WHERE schemaname = 'public';\" | sed '/^$/d' | sed 's/^[ \\t]*//'";
 
-  command += 'psql';
-  if (user) command += ` -U ${user}`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -p ${port}`;
-  command += ` -d ${database}`;
-  command += ' -t -c "SELECT tablename FROM pg_tables WHERE schemaname = \'public\';" | sed \'/^$/d\' | sed \'s/^[ \\t]*//\'';
-
-  return command;
+  return password ? withPGPassFile(host, port, database, user, password, base) : base;
 }
 
 /**
@@ -321,11 +333,14 @@ export function buildMongoDBListDatabasesCommand(options) {
   const { user, password, host = 'localhost', port = 27017 } = options;
 
   let command = 'mongo';
-  if (host) command += ` --host ${host}`;
-  if (port) command += ` --port ${port}`;
-  if (user) command += ` --username ${user}`;
-  if (password) command += ` --password '${password}'`;
-  command += ' --quiet --eval "db.adminCommand(\'listDatabases\').databases.forEach(function(d){print(d.name)})"';
+  if (user && password) {
+    command += ` --uri ${shellSingleQuote(buildMongoURI(host, port, user, password, 'admin'))}`;
+  } else {
+    if (host) command += ` --host ${host}`;
+    if (port) command += ` --port ${port}`;
+  }
+  command +=
+    ' --quiet --eval "db.adminCommand(\'listDatabases\').databases.forEach(function(d){print(d.name)})"';
 
   return command;
 }
@@ -337,11 +352,13 @@ export function buildMongoDBListCollectionsCommand(options) {
   const { database, user, password, host = 'localhost', port = 27017 } = options;
 
   let command = 'mongo';
-  if (host) command += ` --host ${host}`;
-  if (port) command += ` --port ${port}`;
-  if (user) command += ` --username ${user}`;
-  if (password) command += ` --password '${password}'`;
-  command += ` ${database}`;
+  if (user && password) {
+    command += ` --uri ${shellSingleQuote(buildMongoURI(host, port, user, password, database))}`;
+  } else {
+    if (host) command += ` --host ${host}`;
+    if (port) command += ` --port ${port}`;
+    command += ` ${database}`;
+  }
   command += ' --quiet --eval "db.getCollectionNames().forEach(function(c){print(c)})"';
 
   return command;
@@ -351,28 +368,33 @@ export function buildMongoDBListCollectionsCommand(options) {
  * Build MySQL query command (SELECT only)
  */
 export function buildMySQLQueryCommand(options) {
-  const { database, query, user, password, host = 'localhost', port = 3306, format = 'json' } = options;
+  const {
+    database,
+    query,
+    user,
+    password,
+    host = 'localhost',
+    port = 3306,
+    format = 'json',
+  } = options;
 
-  // Validate query is SELECT only
   if (!isSafeQuery(query)) {
     throw new Error('Only SELECT queries are allowed');
   }
 
-  let command = 'mysql';
-  if (user) command += ` -u${user}`;
-  if (password) command += ` -p'${password}'`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -P ${port}`;
-  command += ` ${database}`;
+  let base = 'mysql';
+  if (user) base += ` -u${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -P ${port}`;
+  base += ` ${database}`;
 
   if (format === 'json') {
-    // Use JSON output if MySQL 5.7.8+
-    command += ` -e "${query}" --batch --skip-column-names | awk 'BEGIN{print "["} {if(NR>1)print ","; printf "{\\"row\\":%d,\\"data\\":\\"%s\\"}", NR, $0} END{print "]"}'`;
+    base += ` -e "${query}" --batch --skip-column-names | awk 'BEGIN{print "["} {if(NR>1)print ","; printf "{\\"row\\":%d,\\"data\\":\\"%s\\"}", NR, $0} END{print "]"}'`;
   } else {
-    command += ` -e "${query}"`;
+    base += ` -e "${query}"`;
   }
 
-  return command;
+  return password ? withMySQLCredFile(password, base) : base;
 }
 
 /**
@@ -385,19 +407,14 @@ export function buildPostgreSQLQueryCommand(options) {
     throw new Error('Only SELECT queries are allowed');
   }
 
-  let command = '';
-  if (password) {
-    command = `PGPASSWORD='${password}' `;
-  }
+  let base = 'psql';
+  if (user) base += ` -U ${user}`;
+  if (host) base += ` -h ${host}`;
+  if (port) base += ` -p ${port}`;
+  base += ` -d ${database}`;
+  base += ` -c "${query}"`;
 
-  command += 'psql';
-  if (user) command += ` -U ${user}`;
-  if (host) command += ` -h ${host}`;
-  if (port) command += ` -p ${port}`;
-  command += ` -d ${database}`;
-  command += ` -c "${query}"`;
-
-  return command;
+  return password ? withPGPassFile(host, port, database, user, password, base) : base;
 }
 
 /**
@@ -407,37 +424,39 @@ export function buildMongoDBQueryCommand(options) {
   const { database, collection, query, user, password, host = 'localhost', port = 27017 } = options;
 
   let command = 'mongo';
-  if (host) command += ` --host ${host}`;
-  if (port) command += ` --port ${port}`;
-  if (user) command += ` --username ${user}`;
-  if (password) command += ` --password '${password}'`;
-  command += ` ${database}`;
+  if (user && password) {
+    command += ` --uri ${shellSingleQuote(buildMongoURI(host, port, user, password, database))}`;
+  } else {
+    if (host) command += ` --host ${host}`;
+    if (port) command += ` --port ${port}`;
+    command += ` ${database}`;
+  }
   command += ` --quiet --eval "db.${collection}.find(${query || '{}'}).forEach(printjson)"`;
 
   return command;
 }
 
 /**
- * Validate query is safe (SELECT only)
+ * Validate query is safe (SELECT only, no multi-statements, word-boundary checks)
  */
 export function isSafeQuery(query) {
-  const trimmedQuery = query.trim().toLowerCase();
+  const trimmed = query.trim();
 
-  // Must start with SELECT
-  if (!trimmedQuery.startsWith('select')) {
+  // Must start with SELECT (word boundary)
+  if (!/^SELECT\s/i.test(trimmed)) {
     return false;
   }
 
-  // Block dangerous keywords
-  const dangerousKeywords = [
-    'insert', 'update', 'delete', 'drop', 'create', 'alter',
-    'truncate', 'grant', 'revoke', 'exec', 'execute'
-  ];
+  // Block multi-statements: semicolon followed by non-whitespace
+  if (/;\s*\S/.test(trimmed)) {
+    return false;
+  }
 
-  for (const keyword of dangerousKeywords) {
-    if (trimmedQuery.includes(keyword)) {
-      return false;
-    }
+  // Block dangerous keywords using word boundaries to avoid false positives on column names
+  if (
+    /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|EXEC|EXECUTE)\b/i.test(trimmed)
+  ) {
+    return false;
   }
 
   return true;
@@ -447,10 +466,13 @@ export function isSafeQuery(query) {
  * Parse database list output
  */
 export function parseDatabaseList(output, type) {
-  const lines = output.trim().split('\n').filter(l => l.trim());
+  const lines = output
+    .trim()
+    .split('\n')
+    .filter((l) => l.trim());
 
   // Filter out system databases
-  return lines.filter(db => {
+  return lines.filter((db) => {
     const dbLower = db.toLowerCase();
     if (type === DB_TYPES.MYSQL) {
       return !['information_schema', 'performance_schema', 'mysql', 'sys'].includes(dbLower);
@@ -467,7 +489,10 @@ export function parseDatabaseList(output, type) {
  * Parse table/collection list output
  */
 export function parseTableList(output) {
-  return output.trim().split('\n').filter(l => l.trim());
+  return output
+    .trim()
+    .split('\n')
+    .filter((l) => l.trim());
 }
 
 /**
@@ -475,45 +500,43 @@ export function parseTableList(output) {
  */
 export function buildEstimateSizeCommand(type, database, options = {}) {
   const { user, password, host = 'localhost', port } = options;
+  const effectivePort = port || DB_PORTS[type];
 
   switch (type) {
-  case DB_TYPES.MYSQL: {
-    let command = 'mysql';
-    if (user) command += ` -u${user}`;
-    if (password) command += ` -p'${password}'`;
-    if (host) command += ` -h ${host}`;
-    if (port) command += ` -P ${port}`;
-    command += ` -e "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema='${database}';" | tail -n 1`;
-    return command;
-  }
-
-  case DB_TYPES.POSTGRESQL: {
-    let command = '';
-    if (password) {
-      command = `PGPASSWORD='${password}' `;
+    case DB_TYPES.MYSQL: {
+      let base = 'mysql';
+      if (user) base += ` -u${user}`;
+      if (host) base += ` -h ${host}`;
+      if (effectivePort) base += ` -P ${effectivePort}`;
+      base += ` -e "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema='${database}';" | tail -n 1`;
+      return password ? withMySQLCredFile(password, base) : base;
     }
-    command += 'psql';
-    if (user) command += ` -U ${user}`;
-    if (host) command += ` -h ${host}`;
-    if (port) command += ` -p ${port}`;
-    command += ` -d ${database}`;
-    command += ` -t -c "SELECT pg_database_size('${database}');" | sed 's/^[ \\t]*//'`;
-    return command;
-  }
 
-  case DB_TYPES.MONGODB: {
-    let command = 'mongo';
-    if (host) command += ` --host ${host}`;
-    if (port) command += ` --port ${port}`;
-    if (user) command += ` --username ${user}`;
-    if (password) command += ` --password '${password}'`;
-    command += ` ${database}`;
-    command += ' --quiet --eval "db.stats().dataSize"';
-    return command;
-  }
+    case DB_TYPES.POSTGRESQL: {
+      let base = 'psql';
+      if (user) base += ` -U ${user}`;
+      if (host) base += ` -h ${host}`;
+      if (effectivePort) base += ` -p ${effectivePort}`;
+      base += ` -d ${database}`;
+      base += ` -t -c "SELECT pg_database_size('${database}');" | sed 's/^[ \\t]*//'`;
+      return password ? withPGPassFile(host, effectivePort, database, user, password, base) : base;
+    }
 
-  default:
-    throw new Error(`Unknown database type: ${type}`);
+    case DB_TYPES.MONGODB: {
+      let command = 'mongo';
+      if (user && password) {
+        command += ` --uri ${shellSingleQuote(buildMongoURI(host, effectivePort, user, password, database))}`;
+      } else {
+        if (host) command += ` --host ${host}`;
+        if (effectivePort) command += ` --port ${effectivePort}`;
+        command += ` ${database}`;
+      }
+      command += ' --quiet --eval "db.stats().dataSize"';
+      return command;
+    }
+
+    default:
+      throw new Error(`Unknown database type: ${type}`);
   }
 }
 
@@ -548,6 +571,6 @@ export function getConnectionInfo(type, options) {
     host,
     port: port || defaultPort,
     user: user || 'default',
-    database: database || 'all'
+    database: database || 'all',
   };
 }
