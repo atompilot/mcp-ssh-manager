@@ -23,11 +23,22 @@ function escapeMySQLIdentifier(name) {
 }
 
 /**
- * Escape a string literal for safe embedding in SQL single quotes.
- * Uses standard SQL escape doubling of single quotes (works in both MySQL and PostgreSQL).
+ * Escape a string literal for safe embedding in PostgreSQL SQL single quotes.
+ * PostgreSQL in standard sql_mode does NOT treat backslash as an escape character,
+ * so only single-quote doubling is required.
  */
 function escapeSQLStringLiteral(s) {
   return "'" + s.replace(/'/g, "''") + "'";
+}
+
+/**
+ * Escape a MySQL string literal for single-quote embedding.
+ * MySQL (in default sql_mode, NO_BACKSLASH_ESCAPES=off) treats backslash as an escape
+ * character, so both backslash and single-quote must be escaped to prevent injection
+ * via inputs like "foo\' OR 1=1 --".
+ */
+function escapeMySQLStringLiteral(s) {
+  return "'" + s.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
 }
 
 /**
@@ -532,7 +543,7 @@ export function buildEstimateSizeCommand(type, database, options = {}) {
       if (user) base += ` -u${user}`;
       if (host) base += ` -h ${host}`;
       if (effectivePort) base += ` -P ${effectivePort}`;
-      base += ` -e "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema=${escapeSQLStringLiteral(database)};" | tail -n 1`;
+      base += ` -e "SELECT SUM(data_length + index_length) FROM information_schema.TABLES WHERE table_schema=${escapeMySQLStringLiteral(database)};" | tail -n 1`;
       return password ? withMySQLCredFile(password, base) : base;
     }
 

@@ -145,7 +145,18 @@ export function getCurrentHostKey(host, port = 22) {
  */
 function loadFingerprintStore() {
   try {
-    return JSON.parse(fs.readFileSync(FINGERPRINT_STORE_PATH, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(FINGERPRINT_STORE_PATH, 'utf8'));
+    // Guard against valid JSON that is not a plain object (e.g. null, [], 42)
+    if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+      return data;
+    }
+    logger.error(
+      'Fingerprint store has unexpected format – starting fresh. Verify host keys manually.',
+      {
+        path: FINGERPRINT_STORE_PATH,
+      }
+    );
+    return {};
   } catch (err) {
     if (err.code === 'ENOENT') return {};
     // Log corruption so the operator can investigate; do NOT silently swallow
@@ -160,12 +171,12 @@ function loadFingerprintStore() {
 /**
  * Save the MCP fingerprint store to disk using an atomic write-then-rename
  * to prevent partial writes from corrupting the store.
+ * mkdirSync with recursive:true is idempotent (no-op if directory already exists),
+ * so no existsSync check is needed and no TOCTOU race can occur.
  */
 function saveFingerprintStore(store) {
   const sshDir = path.dirname(FINGERPRINT_STORE_PATH);
-  if (!fs.existsSync(sshDir)) {
-    fs.mkdirSync(sshDir, { mode: 0o700, recursive: true });
-  }
+  fs.mkdirSync(sshDir, { mode: 0o700, recursive: true });
   const tmpPath = FINGERPRINT_STORE_PATH + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(store, null, 2), { mode: 0o600 });
   fs.renameSync(tmpPath, FINGERPRINT_STORE_PATH);
