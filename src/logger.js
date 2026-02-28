@@ -15,16 +15,16 @@ export const LOG_LEVELS = {
   DEBUG: 0,
   INFO: 1,
   WARN: 2,
-  ERROR: 3
+  ERROR: 3,
 };
 
 // Colors for terminal output
 const COLORS = {
   DEBUG: '\x1b[36m', // Cyan
-  INFO: '\x1b[32m',  // Green
-  WARN: '\x1b[33m',  // Yellow
+  INFO: '\x1b[32m', // Green
+  WARN: '\x1b[33m', // Yellow
   ERROR: '\x1b[31m', // Red
-  RESET: '\x1b[0m'
+  RESET: '\x1b[0m',
 };
 
 // Icons for each level
@@ -32,7 +32,7 @@ const ICONS = {
   DEBUG: '🔍',
   INFO: '✅',
   WARN: '⚠️',
-  ERROR: '❌'
+  ERROR: '❌',
 };
 
 class Logger {
@@ -70,16 +70,30 @@ class Logger {
   }
 
   /**
+   * Remove sensitive values from shell command strings before logging or storing.
+   */
+  maskSensitive(str) {
+    if (!str) return str;
+    return str
+      .replace(/-p'[^']*'/g, "-p'***'") // MySQL -p'password'
+      .replace(/--password\s+'[^']*'/g, "--password '***'") // MongoDB/pg --password 'pass'
+      .replace(/PGPASSWORD='[^']*'/g, "PGPASSWORD='***'") // PostgreSQL env var
+      .replace(/PGPASSFILE=[^\s;]*/g, 'PGPASSFILE=***') // PostgreSQL passfile
+      .replace(/echo\s+"[^"]*"\s+\|\s+sudo/g, 'echo "***" | sudo') // sudo password pipe
+      .replace(/printf '[^']*' '[^']*' > \$MCPTMPF/g, "printf '***' '***' > $MCPTMPF"); // cred file write
+  }
+
+  /**
    * Save command to history
    */
   saveCommandToHistory(command, server, result) {
     const entry = {
       timestamp: new Date().toISOString(),
       server,
-      command,
+      command: this.maskSensitive(command),
       success: result.success,
       duration: result.duration,
-      error: result.error
+      error: result.error,
     };
 
     this.commandHistory.push(entry);
@@ -101,7 +115,7 @@ class Logger {
    */
   formatMessage(level, message, data = {}) {
     const timestamp = new Date().toISOString();
-    const levelName = Object.keys(LOG_LEVELS).find(key => LOG_LEVELS[key] === level) || 'INFO';
+    const levelName = Object.keys(LOG_LEVELS).find((key) => LOG_LEVELS[key] === level) || 'INFO';
 
     // Console format with colors
     const consoleFormat = `${COLORS[levelName]}${ICONS[levelName]} [${timestamp}] [${levelName}]${COLORS.RESET} ${message}`;
@@ -117,7 +131,7 @@ class Logger {
 
     return {
       console: consoleFormat + (this.verbose && dataStr ? dataStr : ''),
-      file: fileFormat + dataStr
+      file: fileFormat + dataStr,
     };
   }
 
@@ -164,10 +178,13 @@ class Logger {
    * Log SSH command execution
    */
   logCommand(server, command, cwd = null) {
+    const safeCommand = this.maskSensitive(command);
     const logData = {
       server,
-      command: this.verbose ? command : command.substring(0, 100) + (command.length > 100 ? '...' : ''),
-      cwd
+      command: this.verbose
+        ? safeCommand
+        : safeCommand.substring(0, 100) + (safeCommand.length > 100 ? '...' : ''),
+      cwd,
     };
 
     if (this.verbose) {
@@ -188,7 +205,7 @@ class Logger {
     const resultData = {
       success: !result.code,
       duration: `${duration}ms`,
-      error: result.code ? result.stderr : undefined
+      error: result.code ? result.stderr : undefined,
     };
 
     // Save to history
@@ -208,20 +225,20 @@ class Logger {
     const message = `SSH connection ${event}: ${server}`;
 
     switch (event) {
-    case 'established':
-      this.info(message, data);
-      break;
-    case 'reused':
-      this.debug(message, data);
-      break;
-    case 'closed':
-      this.info(message, data);
-      break;
-    case 'failed':
-      this.error(message, data);
-      break;
-    default:
-      this.debug(message, data);
+      case 'established':
+        this.info(message, data);
+        break;
+      case 'reused':
+        this.debug(message, data);
+        break;
+      case 'closed':
+        this.info(message, data);
+        break;
+      case 'failed':
+        this.error(message, data);
+        break;
+      default:
+        this.debug(message, data);
     }
   }
 
