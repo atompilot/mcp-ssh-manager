@@ -1,11 +1,22 @@
 import { Client } from 'ssh2';
 import fs from 'fs';
 import os from 'os';
-import { promisify } from 'util';
 import crypto from 'crypto';
-import { isHostKnown, getCurrentHostKey, addHostKey, updateHostKey } from './ssh-key-manager.js';
-import { configLoader } from './config-loader.js';
+import {
+  isHostKnown,
+  addHostKey,
+  storeFingerprint,
+  getStoredFingerprint,
+} from './ssh-key-manager.js';
 import { logger } from './logger.js';
+
+/**
+ * Safely wrap a path in single quotes for shell argument use.
+ * Escapes any single quotes within the path.
+ */
+function escapeShellArg(str) {
+  return "'" + str.replace(/'/g, "'\\''") + "'";
+}
 
 class SSHManager {
   constructor(config) {
@@ -43,16 +54,38 @@ class SSHManager {
         keepaliveInterval: 10000,
         // Add compatibility options for problematic servers
         algorithms: {
-          kex: ['ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521', 'diffie-hellman-group-exchange-sha256', 'diffie-hellman-group14-sha256', 'diffie-hellman-group14-sha1'],
-          cipher: ['aes128-ctr', 'aes192-ctr', 'aes256-ctr', 'aes128-gcm', 'aes256-gcm', 'aes128-cbc', 'aes192-cbc', 'aes256-cbc'],
-          serverHostKey: ['ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521', 'ssh-ed25519'],
-          hmac: ['hmac-sha2-256', 'hmac-sha2-512', 'hmac-sha1']
+          kex: [
+            'ecdh-sha2-nistp256',
+            'ecdh-sha2-nistp384',
+            'ecdh-sha2-nistp521',
+            'diffie-hellman-group-exchange-sha256',
+            'diffie-hellman-group14-sha256',
+            'diffie-hellman-group14-sha1',
+          ],
+          cipher: [
+            'aes128-ctr',
+            'aes192-ctr',
+            'aes256-ctr',
+            'aes128-gcm',
+            'aes256-gcm',
+            'aes128-cbc',
+            'aes192-cbc',
+            'aes256-cbc',
+          ],
+          serverHostKey: [
+            'ssh-rsa',
+            'ecdsa-sha2-nistp256',
+            'ecdsa-sha2-nistp384',
+            'ecdsa-sha2-nistp521',
+            'ssh-ed25519',
+          ],
+          hmac: ['hmac-sha2-256', 'hmac-sha2-512', 'hmac-sha1'],
         },
         debug: (info) => {
           if (info.includes('Handshake') || info.includes('error')) {
             logger.debug('SSH2 Debug', { info });
           }
-        }
+        },
       };
 
       // Add host key verification callback if enabled
@@ -61,40 +94,58 @@ class SSHManager {
           const port = this.config.port || 22;
           const host = this.config.host;
 
-          // Check if host is already known
-          if (isHostKnown(host, port)) {
-            // For now, accept all known hosts
-            // TODO: Implement proper fingerprint comparison once we understand SSH2's hash format
-            logger.info('Host key verified', { host, port });
+          // Compute SHA256 fingerprint from the raw key buffer provided by ssh2
+          const fingerprint = crypto.createHash('sha256').update(hashedKey).digest('base64');
+
+          // Check MCP fingerprint store first (takes precedence over system known_hosts)
+          const storedFingerprint = getStoredFingerprint(host, port);
+          if (storedFingerprint) {
+            if (storedFingerprint !== fingerprint) {
+              logger.error('HOST KEY MISMATCH - possible MITM attack!', {
+                host,
+                port,
+                stored: storedFingerprint,
+                received: fingerprint,
+              });
+              return false;
+            }
+            logger.info('Host key fingerprint verified', { host, port });
             return true;
           }
 
-          // Host is not known
-          logger.info('New host detected', { host, port });
+          // Fall back to system known_hosts presence check
+          if (isHostKnown(host, port)) {
+            // Host is in known_hosts - store fingerprint for future verification
+            storeFingerprint(host, port, fingerprint);
+            logger.info('Host key verified and fingerprint cached', { host, port });
+            return true;
+          }
 
-          // If autoAcceptHostKey is enabled, accept and add the key
+          // Unknown host - apply TOFU policy
           if (this.autoAcceptHostKey) {
-            logger.info('Auto-accept host key', { host, port });
-            // Schedule key addition after connection
+            logger.info('New host: storing fingerprint (TOFU)', { host, port, fingerprint });
+            storeFingerprint(host, port, fingerprint);
             setImmediate(async () => {
               try {
                 await addHostKey(host, port);
-                logger.info('Host key added', { host, port });
               } catch (err) {
-                logger.warn('Failed to add host key', {
+                logger.warn('Failed to add host key to known_hosts', {
                   host,
                   port,
-                  error: err.message
+                  error: err.message,
                 });
               }
             });
             return true;
           }
 
-          // For backward compatibility, accept new hosts by default
-          // In production, you might want to prompt the user or check a whitelist
-          logger.warn('Auto-accepting new host', { host, port });
-          return true;
+          // autoAcceptHostKey is false - reject unknown host
+          logger.error('Unknown host rejected. Enable autoAcceptHostKey or add manually.', {
+            host,
+            port,
+            fingerprint,
+          });
+          return false;
         };
       }
 
@@ -117,7 +168,7 @@ class SSHManager {
     }
 
     const { timeout = 30000, cwd, rawCommand = false } = options;
-    const fullCommand = (cwd && !rawCommand) ? `cd ${cwd} && ${command}` : command;
+    const fullCommand = cwd && !rawCommand ? `cd ${escapeShellArg(cwd)} && ${command}` : command;
 
     return new Promise((resolve, reject) => {
       let stdout = '';
@@ -151,7 +202,9 @@ class SSHManager {
               // Ignore errors
             }
 
-            reject(new Error(`Command timeout after ${timeout}ms: ${command.substring(0, 100)}...`));
+            reject(
+              new Error(`Command timeout after ${timeout}ms: ${command.substring(0, 100)}...`)
+            );
           }
         }, timeout);
       }
@@ -174,7 +227,7 @@ class SSHManager {
               stdout,
               stderr,
               code: code || 0,
-              signal
+              signal,
             });
           }
         });
@@ -204,7 +257,7 @@ class SSHManager {
     }
 
     const { cwd, onStdout, onStderr } = options;
-    const fullCommand = cwd ? `cd ${cwd} && ${command}` : command;
+    const fullCommand = cwd ? `cd ${escapeShellArg(cwd)} && ${command}` : command;
 
     return new Promise((resolve, reject) => {
       this.client.exec(fullCommand, (err, stream) => {
@@ -222,7 +275,7 @@ class SSHManager {
             stderr,
             code: code || 0,
             signal,
-            stream
+            stream,
           });
         });
 
@@ -285,7 +338,7 @@ class SSHManager {
     try {
       const result = await this.execCommand('getent passwd $USER | cut -d: -f6', {
         timeout: 5000,
-        rawCommand: true
+        rawCommand: true,
       });
       homeDir = result.stdout.trim();
       if (homeDir && homeDir.startsWith('/')) {
@@ -300,7 +353,7 @@ class SSHManager {
     try {
       const result = await this.execCommand('env -i HOME=$HOME bash -c "echo $HOME"', {
         timeout: 5000,
-        rawCommand: true
+        rawCommand: true,
       });
       homeDir = result.stdout.trim();
       if (homeDir && homeDir.startsWith('/')) {
@@ -315,7 +368,7 @@ class SSHManager {
     try {
       const result = await this.execCommand('grep "^$USER:" /etc/passwd | cut -d: -f6', {
         timeout: 5000,
-        rawCommand: true
+        rawCommand: true,
       });
       homeDir = result.stdout.trim();
       if (homeDir && homeDir.startsWith('/')) {
@@ -330,7 +383,7 @@ class SSHManager {
     try {
       const result = await this.execCommand('cd ~ && pwd', {
         timeout: 5000,
-        rawCommand: true
+        rawCommand: true,
       });
       homeDir = result.stdout.trim();
       if (homeDir && homeDir.startsWith('/')) {

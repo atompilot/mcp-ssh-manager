@@ -1,4 +1,4 @@
-import { execSync, spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -8,6 +8,9 @@ import { logger } from './logger.js';
 // Path to known_hosts file
 const KNOWN_HOSTS_PATH = path.join(os.homedir(), '.ssh', 'known_hosts');
 const KNOWN_HOSTS_BACKUP = path.join(os.homedir(), '.ssh', 'known_hosts.mcp-backup');
+
+// Path to MCP-managed fingerprint store (separate from system known_hosts)
+const FINGERPRINT_STORE_PATH = path.join(os.homedir(), '.ssh', 'mcp-ssh-fingerprints.json');
 
 /**
  * Parse a known_hosts entry
@@ -22,7 +25,7 @@ function parseKnownHostEntry(line) {
     host: parts[0],
     keyType: parts[1],
     key: parts[2],
-    comment: parts.slice(3).join(' ') || ''
+    comment: parts.slice(3).join(' ') || '',
   };
 }
 
@@ -49,7 +52,10 @@ export async function getHostKeyFingerprint(host, port = 22) {
         return;
       }
 
-      const lines = stdout.trim().split('\n').filter(l => l && !l.startsWith('#'));
+      const lines = stdout
+        .trim()
+        .split('\n')
+        .filter((l) => l && !l.startsWith('#'));
       const fingerprints = [];
 
       for (const line of lines) {
@@ -63,7 +69,7 @@ export async function getHostKeyFingerprint(host, port = 22) {
             host: entry.host,
             type: entry.keyType,
             fingerprint: `SHA256:${hash}`,
-            fullKey: line
+            fullKey: line,
           });
         }
       }
@@ -122,7 +128,7 @@ export function getCurrentHostKey(host, port = 22) {
           host: entry.host,
           type: entry.keyType,
           fingerprint: `SHA256:${hash}`,
-          fullKey: line
+          fullKey: line,
         });
       }
     }
@@ -132,14 +138,59 @@ export function getCurrentHostKey(host, port = 22) {
 }
 
 /**
+ * Load the MCP fingerprint store from disk
+ */
+function loadFingerprintStore() {
+  try {
+    if (fs.existsSync(FINGERPRINT_STORE_PATH)) {
+      return JSON.parse(fs.readFileSync(FINGERPRINT_STORE_PATH, 'utf8'));
+    }
+  } catch {
+    // Ignore parse errors, start fresh
+  }
+  return {};
+}
+
+/**
+ * Save the MCP fingerprint store to disk
+ */
+function saveFingerprintStore(store) {
+  const sshDir = path.dirname(FINGERPRINT_STORE_PATH);
+  if (!fs.existsSync(sshDir)) {
+    fs.mkdirSync(sshDir, { mode: 0o700, recursive: true });
+  }
+  fs.writeFileSync(FINGERPRINT_STORE_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
+}
+
+/**
+ * Store a host fingerprint in the MCP fingerprint store
+ */
+export function storeFingerprint(host, port = 22, fingerprint) {
+  const store = loadFingerprintStore();
+  const key = `${host}:${port}`;
+  store[key] = { fingerprint, storedAt: new Date().toISOString() };
+  saveFingerprintStore(store);
+  logger.info('Host fingerprint stored', { host, port });
+}
+
+/**
+ * Get a stored host fingerprint from the MCP fingerprint store
+ */
+export function getStoredFingerprint(host, port = 22) {
+  const store = loadFingerprintStore();
+  const entry = store[`${host}:${port}`];
+  return entry ? entry.fingerprint : null;
+}
+
+/**
  * Remove a host from known_hosts
  */
 export function removeHostKey(host, port = 22) {
   try {
     const hostEntry = port === 22 ? host : `[${host}]:${port}`;
 
-    // Use ssh-keygen to remove the host
-    execSync(`ssh-keygen -R "${hostEntry}"`, { stdio: 'ignore' });
+    // Use execFileSync to avoid shell injection via hostEntry
+    execFileSync('ssh-keygen', ['-R', hostEntry], { stdio: 'ignore' });
 
     logger.info('Host key removed', { host, port });
     return true;
@@ -165,7 +216,7 @@ export async function addHostKey(host, port = 22, keyData = null) {
       if (fingerprints.length === 0) {
         throw new Error('No host keys found');
       }
-      keyData = fingerprints.map(fp => fp.fullKey).join('\n');
+      keyData = fingerprints.map((fp) => fp.fullKey).join('\n');
     }
 
     // Ensure .ssh directory exists
@@ -233,8 +284,8 @@ export async function hasHostKeyChanged(host, port = 22) {
     return {
       changed: true,
       reason: 'key_mismatch',
-      currentFingerprints: currentKeys.map(k => k.fingerprint),
-      newFingerprints: newKeys.map(k => k.fingerprint)
+      currentFingerprints: currentKeys.map((k) => k.fingerprint),
+      newFingerprints: newKeys.map((k) => k.fingerprint),
     };
   } catch (error) {
     logger.error('Failed to verify host key', { host, port, error: error.message });
@@ -278,13 +329,13 @@ export function listKnownHosts() {
           hosts.set(hostKey, {
             host,
             port,
-            keys: []
+            keys: [],
           });
         }
 
         hosts.get(hostKey).keys.push({
           type: entry.keyType,
-          fingerprint: `SHA256:${hash}`
+          fingerprint: `SHA256:${hash}`,
         });
       }
     }
@@ -305,7 +356,7 @@ export function detectSSHKeyError(stderr) {
     'RSA host key for .* has changed',
     'ED25519 host key for .* has changed',
     'Offending key in',
-    'Add correct host key in'
+    'Add correct host key in',
   ];
 
   for (const pattern of keyErrorPatterns) {
@@ -327,7 +378,7 @@ export function extractHostFromSSHError(stderr) {
     /Host key for \[([^\]]+)\]:(\d+) has changed/i,
     /Host key for ([^\s]+) has changed/i,
     /The authenticity of host '\[([^\]]+)\]:(\d+)'/i,
-    /The authenticity of host '([^\s]+) \(/i
+    /The authenticity of host '([^\s]+) \(/i,
   ];
 
   for (const pattern of patterns) {
@@ -366,7 +417,9 @@ export async function handleSSHKeyError(stderr, options = {}) {
   }
 
   if (!interactive) {
-    throw new Error(`Host key verification failed for ${hostInfo.host}:${hostInfo.port}. Use ssh_key_manage tool to update the key.`);
+    throw new Error(
+      `Host key verification failed for ${hostInfo.host}:${hostInfo.port}. Use ssh_key_manage tool to update the key.`
+    );
   }
 
   // In interactive mode, we would prompt the user
@@ -374,6 +427,6 @@ export async function handleSSHKeyError(stderr, options = {}) {
   return {
     action: 'prompt_required',
     ...hostInfo,
-    message: `Host key has changed for ${hostInfo.host}:${hostInfo.port}. Use ssh_key_manage tool to verify and update the key.`
+    message: `Host key has changed for ${hostInfo.host}:${hostInfo.port}. Use ssh_key_manage tool to verify and update the key.`,
   };
 }
