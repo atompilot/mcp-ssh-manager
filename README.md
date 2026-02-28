@@ -13,20 +13,22 @@ A powerful Model Context Protocol (MCP) server that enables **Claude Code** and 
 
 ## Security Improvements
 
-This fork addresses security vulnerabilities found in the original repository:
+This fork addresses security vulnerabilities found in the original repository.
+All fixes were validated through a multi-round cross-review cycle (Claude writes, Codex reviews, repeat until clean).
 
-| Severity | Fix | Description |
-|----------|-----|-------------|
-| CRITICAL | Host key fingerprint comparison | `hostVerifier` now computes SHA256 of the received key and compares it against a local fingerprint store (`~/.ssh/mcp-ssh-fingerprints.json`). MITM attacks are detected and rejected instead of silently accepted. TOFU (Trust-On-First-Use) is supported via `autoAcceptHostKey`. |
-| CRITICAL | sudo password shell escaping | `sudoPassword` is now escaped for backslash, double-quote, backtick, and `$` before embedding in shell commands, preventing shell injection. |
-| HIGH | cwd path shell injection | `cd ${cwd}` now uses single-quote escaping (`escapeShellArg`), preventing injection via directory names containing `&&`, `;`, etc. |
-| HIGH | MySQL password not in `ps aux` | All MySQL commands now use `--defaults-extra-file` with a temporary, mode-600 credentials file instead of `-p'password'` on the command line. Temp file is cleaned up via `trap`. |
-| HIGH | PostgreSQL password not in env | All PostgreSQL commands now use `PGPASSFILE` with a temporary, mode-600 `.pgpass` file instead of the `PGPASSWORD` environment variable (which was visible in `/proc/self/environ`). |
-| MEDIUM | MongoDB credentials via URI | MongoDB commands now use `--uri mongodb://user:pass@host/db` instead of separate `--username`/`--password` flags. |
-| MEDIUM | isSafeQuery improved | Uses word-boundary regex (`\b`) for dangerous keyword detection (avoids false positives on column names), and blocks multi-statement queries (`;` followed by non-whitespace). |
-| MEDIUM | ssh-keygen uses execFileSync | `removeHostKey` now uses `execFileSync('ssh-keygen', ['-R', hostEntry])` instead of `execSync` with a shell-interpolated string, preventing injection via host entries. |
-| MEDIUM | Log sanitization | `logger.maskSensitive()` strips password patterns from commands before writing to history files or stderr. |
-| LOW | parseInt NaN guard | All `parseInt(process.env.*)` calls in `config.js` now use `safeParseInt(val, default)` which returns the default when the result is `NaN`. |
+| Severity | Area | Fix |
+|----------|------|-----|
+| 🔴 CRITICAL | Host key verification | `hostVerifier` now computes SHA256 of the received raw key buffer and compares it against a persistent fingerprint store (`~/.ssh/mcp-ssh-fingerprints.json`). MITM attacks are detected and rejected. TOFU (Trust-On-First-Use) is supported via `autoAcceptHostKey`. The fingerprint store uses atomic writes (write-then-rename) and TOCTOU-free reads (try/catch + `ENOENT` check) with JSON type validation. |
+| 🔴 CRITICAL | sudo password injection | `sudoPassword` is now passed via `printf '%s\n' '<single-quoted>'` pipe, using `shellSingleQuote()` to safely handle all special characters including single quotes, `$`, and backticks. Previously used `echo "..."` with double-quote embedding, which allowed shell injection. |
+| 🟠 HIGH | cwd path shell injection | `cd ${cwd}` now uses `escapeShellArg()` (single-quote wrapping), preventing injection via directory names containing `&&`, `;`, `$(...)`, etc. |
+| 🟠 HIGH | MySQL password in `ps aux` | All MySQL commands use `--defaults-extra-file` pointing to a temporary mode-600 credentials file instead of `-p'password'` on the command line. The temp file is cleaned up via `trap 'rm -f "$MCPTMPF"' EXIT INT TERM`. |
+| 🟠 HIGH | PostgreSQL password in environment | All PostgreSQL commands use `PGPASSFILE` pointing to a temporary mode-600 `.pgpass` file instead of `PGPASSWORD` (which was visible in `/proc/self/environ`). |
+| 🟠 HIGH | MySQL SQL string literal injection | MySQL inline SQL now uses `escapeMySQLStringLiteral()` which escapes both backslash (`\\`) and single quote (`\'`). MySQL's default mode treats `\` as an escape character; the previous `''`-doubling-only approach could be bypassed via inputs containing `\'`. |
+| 🟡 MEDIUM | MongoDB credentials in `ps aux` | MongoDB commands use `--uri mongodb://user:pass@host/db` (percent-encoded) instead of separate `--username`/`--password` flags. |
+| 🟡 MEDIUM | SQL query validation | `isSafeQuery()` uses word-boundary regex (`\b`) for keyword detection (avoids false positives on column names), blocks multi-statement queries (`;` + non-whitespace), and blocks `UNION`/`INTO` to prevent UNION-based injection and `SELECT INTO FILE` attacks. |
+| 🟡 MEDIUM | ssh-keygen shell injection | `removeHostKey` uses `execFileSync('ssh-keygen', ['-R', hostEntry])` (array args) instead of `execSync` with a shell-interpolated string. |
+| 🟡 MEDIUM | Sensitive data in logs | `logger.maskSensitive()` strips password patterns from commands before writing to history or stderr. Handles shell-quoted passwords containing single quotes (e.g. `printf '%s\n' 'x'\''y' \| sudo`). |
+| 🟢 LOW | parseInt NaN/zero guard | `safeParseInt(val, default, min=1)` in `config.js` returns the default for `NaN` and values below `min`, preventing silently disabled limits from malformed env vars. |
 
 <div align="center">
 
