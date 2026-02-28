@@ -1,10 +1,32 @@
 # MCP SSH Manager - SSH Remote Server Management via Model Context Protocol 🚀
 
+> **Security-hardened fork** of [bvisible/mcp-ssh-manager](https://github.com/bvisible/mcp-ssh-manager).
+> See [Security Improvements](#security-improvements) below for details.
+
 > **Looking for MCP SSH tools?** This is the **MCP SSH Manager** - a complete Model Context Protocol (MCP) server for SSH remote server management compatible with Claude Code and OpenAI Codex.
 
 A powerful Model Context Protocol (MCP) server that enables **Claude Code** and **OpenAI Codex** to manage multiple SSH connections seamlessly. Control remote servers, execute commands, transfer files, manage databases, and automate DevOps tasks directly from your AI assistant.
 
 **Keywords:** MCP SSH, MCP SSH Manager, SSH MCP, Model Context Protocol SSH, Claude Code SSH, SSH MCP Server, Remote SSH Management, MCP Server SSH
+
+---
+
+## Security Improvements
+
+This fork addresses security vulnerabilities found in the original repository:
+
+| Severity | Fix | Description |
+|----------|-----|-------------|
+| CRITICAL | Host key fingerprint comparison | `hostVerifier` now computes SHA256 of the received key and compares it against a local fingerprint store (`~/.ssh/mcp-ssh-fingerprints.json`). MITM attacks are detected and rejected instead of silently accepted. TOFU (Trust-On-First-Use) is supported via `autoAcceptHostKey`. |
+| CRITICAL | sudo password shell escaping | `sudoPassword` is now escaped for backslash, double-quote, backtick, and `$` before embedding in shell commands, preventing shell injection. |
+| HIGH | cwd path shell injection | `cd ${cwd}` now uses single-quote escaping (`escapeShellArg`), preventing injection via directory names containing `&&`, `;`, etc. |
+| HIGH | MySQL password not in `ps aux` | All MySQL commands now use `--defaults-extra-file` with a temporary, mode-600 credentials file instead of `-p'password'` on the command line. Temp file is cleaned up via `trap`. |
+| HIGH | PostgreSQL password not in env | All PostgreSQL commands now use `PGPASSFILE` with a temporary, mode-600 `.pgpass` file instead of the `PGPASSWORD` environment variable (which was visible in `/proc/self/environ`). |
+| MEDIUM | MongoDB credentials via URI | MongoDB commands now use `--uri mongodb://user:pass@host/db` instead of separate `--username`/`--password` flags. |
+| MEDIUM | isSafeQuery improved | Uses word-boundary regex (`\b`) for dangerous keyword detection (avoids false positives on column names), and blocks multi-statement queries (`;` followed by non-whitespace). |
+| MEDIUM | ssh-keygen uses execFileSync | `removeHostKey` now uses `execFileSync('ssh-keygen', ['-R', hostEntry])` instead of `execSync` with a shell-interpolated string, preventing injection via host entries. |
+| MEDIUM | Log sanitization | `logger.maskSensitive()` strips password patterns from commands before writing to history files or stderr. |
+| LOW | parseInt NaN guard | All `parseInt(process.env.*)` calls in `config.js` now use `safeParseInt(val, default)` which returns the default when the result is `NaN`. |
 
 <div align="center">
 
