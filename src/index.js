@@ -13,38 +13,23 @@ import { configLoader } from './config-loader.js';
 import {
   getTempFilename,
   buildDeploymentStrategy,
-  detectDeploymentNeeds
+  detectDeploymentNeeds,
 } from './deploy-helper.js';
-import {
-  resolveServerName,
-  addAlias,
-  removeAlias,
-  listAliases
-} from './server-aliases.js';
+import { resolveServerName, addAlias, removeAlias, listAliases } from './server-aliases.js';
 import {
   expandCommandAlias,
   addCommandAlias,
   removeCommandAlias,
   listCommandAliases,
-  suggestAliases
+  suggestAliases,
 } from './command-aliases.js';
-import {
-  OUTPUT_LIMITS,
-  TIMEOUTS,
-  truncateOutput,
-  formatJSONResponse
-} from './config.js';
-import {
-  initializeHooks,
-  executeHook,
-  toggleHook,
-  listHooks
-} from './hooks-system.js';
+import { OUTPUT_LIMITS, TIMEOUTS, truncateOutput, formatJSONResponse } from './config.js';
+import { initializeHooks, executeHook, toggleHook, listHooks } from './hooks-system.js';
 import {
   loadProfile,
   listProfiles,
   setActiveProfile,
-  getActiveProfileName
+  getActiveProfileName,
 } from './profile-loader.js';
 import { logger } from './logger.js';
 import {
@@ -52,7 +37,7 @@ import {
   getSession,
   listSessions,
   closeSession,
-  SESSION_STATES
+  SESSION_STATES,
 } from './session-manager.js';
 import {
   getGroup,
@@ -63,7 +48,7 @@ import {
   removeServersFromGroup,
   listGroups,
   executeOnGroup,
-  EXECUTION_STRATEGIES
+  EXECUTION_STRATEGIES,
 } from './server-groups.js';
 import {
   createTunnel,
@@ -71,7 +56,7 @@ import {
   listTunnels,
   closeTunnel,
   closeServerTunnels,
-  TUNNEL_TYPES
+  TUNNEL_TYPES,
 } from './tunnel-manager.js';
 import {
   getHostKeyFingerprint,
@@ -83,7 +68,7 @@ import {
   hasHostKeyChanged,
   listKnownHosts,
   detectSSHKeyError,
-  extractHostFromSSHError
+  extractHostFromSSHError,
 } from './ssh-key-manager.js';
 import {
   BACKUP_TYPES,
@@ -102,7 +87,7 @@ import {
   parseBackupsList,
   buildCleanupCommand,
   buildCronScheduleCommand,
-  parseCronJobs
+  parseCronJobs,
 } from './backup-manager.js';
 import {
   HEALTH_STATUS,
@@ -131,7 +116,7 @@ import {
   buildComprehensiveHealthCheckCommand,
   parseComprehensiveHealthCheck,
   getCommonServices,
-  resolveServiceName
+  resolveServiceName,
 } from './health-monitor.js';
 import {
   DB_TYPES,
@@ -157,7 +142,7 @@ import {
   buildEstimateSizeCommand,
   parseSize,
   formatBytes,
-  getConnectionInfo
+  getConnectionInfo,
 } from './database-manager.js';
 import { loadToolConfig, isToolEnabled } from './tool-config-manager.js';
 
@@ -170,44 +155,55 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') });
 // Initialize logger
 logger.info('MCP SSH Manager starting', {
   logLevel: process.env.SSH_LOG_LEVEL || 'INFO',
-  verbose: process.env.SSH_VERBOSE === 'true'
+  verbose: process.env.SSH_VERBOSE === 'true',
 });
 
 // Load SSH server configuration
 let servers = {};
-configLoader.load({
-  envPath: path.join(__dirname, '..', '.env'),
-  tomlPath: process.env.SSH_CONFIG_PATH,
-  preferToml: process.env.PREFER_TOML_CONFIG === 'true'
-}).then(loadedServers => {
-  // Convert Map to object for backward compatibility
-  servers = {};
-  for (const [name, config] of loadedServers) {
-    servers[name] = config;
-  }
-  logger.info(`Loaded ${loadedServers.size} SSH server configurations from ${configLoader.configSource}`);
-}).catch(error => {
-  logger.error('Failed to load server configuration', { error: error.message });
-});
+configLoader
+  .load({
+    envPath: path.join(__dirname, '..', '.env'),
+    tomlPath: process.env.SSH_CONFIG_PATH,
+    preferToml: process.env.PREFER_TOML_CONFIG === 'true',
+  })
+  .then((loadedServers) => {
+    // Convert Map to object for backward compatibility
+    servers = {};
+    for (const [name, config] of loadedServers) {
+      servers[name] = config;
+    }
+    logger.info(
+      `Loaded ${loadedServers.size} SSH server configurations from ${configLoader.configSource}`
+    );
+  })
+  .catch((error) => {
+    logger.error('Failed to load server configuration', { error: error.message });
+  });
 
 // Initialize hooks system
-initializeHooks().catch(error => {
+initializeHooks().catch((error) => {
   logger.error('Failed to initialize hooks', { error: error.message });
 });
 
 // Load tool configuration
 let toolConfig = null;
-loadToolConfig().then(config => {
-  toolConfig = config;
-  const summary = config.getSummary();
-  logger.info(`Tool configuration loaded: ${summary.mode} mode, ${summary.enabledCount}/${summary.totalTools} tools enabled`);
-  if (summary.mode === 'all') {
-    logger.info('💡 Tip: Run "ssh-manager tools configure" to reduce context usage in Claude Code');
-  }
-}).catch(error => {
-  logger.error('Failed to load tool configuration', { error: error.message });
-  logger.info('Using default configuration (all tools enabled)');
-});
+loadToolConfig()
+  .then((config) => {
+    toolConfig = config;
+    const summary = config.getSummary();
+    logger.info(
+      `Tool configuration loaded: ${summary.mode} mode, ${summary.enabledCount}/${summary.totalTools} tools enabled`
+    );
+    if (summary.mode === 'all') {
+      logger.info(
+        '💡 Tip: Run "ssh-manager tools configure" to reduce context usage in Claude Code'
+      );
+    }
+  })
+  .catch((error) => {
+    logger.error('Failed to load tool configuration', { error: error.message });
+    logger.info('Using default configuration (all tools enabled)');
+  });
 
 // Map to store active connections
 const connections = new Map();
@@ -238,13 +234,15 @@ async function execCommandWithTimeout(ssh, command, options = {}, timeoutMs = 30
   const isWindows = platform === 'windows';
 
   // For commands that might hang, use the system's timeout command if available
-  // Skip for Windows hosts where the Linux timeout/sh commands don't exist
-  const useSystemTimeout = timeoutMs > 0 && timeoutMs < 300000 && !rawCommand && !isWindows; // Max 5 minutes, not for raw/Windows commands
+  // Skip for Windows/macOS hosts where the GNU timeout command doesn't exist
+  const isMacOS = platform === 'macos';
+  const useSystemTimeout =
+    timeoutMs > 0 && timeoutMs < 300000 && !rawCommand && !isWindows && !isMacOS;
 
   if (useSystemTimeout) {
     // Wrap command with timeout command (works on Linux/Mac)
     const timeoutSeconds = Math.ceil(timeoutMs / 1000);
-    const wrappedCommand = `timeout ${timeoutSeconds} sh -c '${command.replace(/'/g, '\'\\\'\'')}'`;
+    const wrappedCommand = `timeout ${timeoutSeconds} sh -c '${command.replace(/'/g, "'\\''")}'`;
 
     try {
       const result = await ssh.execCommand(wrappedCommand, otherOptions);
@@ -346,7 +344,9 @@ function cleanupOldConnections() {
   const now = Date.now();
   for (const [serverName, timestamp] of connectionTimestamps.entries()) {
     if (now - timestamp > CONNECTION_TIMEOUT) {
-      logger.info(`Connection to ${serverName} timed out, closing`, { timeout: CONNECTION_TIMEOUT });
+      logger.info(`Connection to ${serverName} timed out, closing`, {
+        timeout: CONNECTION_TIMEOUT,
+      });
       closeConnection(serverName);
     }
   }
@@ -365,8 +365,10 @@ async function getConnection(serverName) {
   if (!resolvedName) {
     const availableServers = Object.keys(servers);
     const aliases = listAliases();
-    const aliasInfo = aliases.length > 0 ?
-      ` Aliases: ${aliases.map(a => `${a.alias}->${a.target}`).join(', ')}` : '';
+    const aliasInfo =
+      aliases.length > 0
+        ? ` Aliases: ${aliases.map((a) => `${a.alias}->${a.target}`).join(', ')}`
+        : '';
     throw new Error(
       `Server "${serverName}" not found. Available servers: ${availableServers.join(', ') || 'none'}.${aliasInfo}`
     );
@@ -407,7 +409,7 @@ async function getConnection(serverName) {
     logger.logConnection(serverName, 'established', {
       host: serverConfig.host,
       port: serverConfig.port,
-      method: serverConfig.password ? 'password' : 'key'
+      method: serverConfig.password ? 'password' : 'key',
     });
 
     // Execute post-connect hook
@@ -453,9 +455,15 @@ registerToolConditional(
     inputSchema: {
       server: z.string().describe('Server name from configuration'),
       command: z.string().describe('Command to execute'),
-      cwd: z.string().optional().describe('Working directory (optional, uses default if configured)'),
-      timeout: z.number().optional().describe('Command timeout in milliseconds (default: 120000, max: 300000)')
-    }
+      cwd: z
+        .string()
+        .optional()
+        .describe('Working directory (optional, uses default if configured)'),
+      timeout: z
+        .number()
+        .optional()
+        .describe('Command timeout in milliseconds (default: 120000, max: 300000)'),
+    },
   },
   async ({ server: serverName, command, cwd, timeout = TIMEOUTS.DEFAULT_COMMAND_TIMEOUT }) => {
     // Cap timeout at maximum allowed
@@ -471,7 +479,7 @@ registerToolConditional(
         await executeHook('pre-bench-update', {
           server: serverName,
           sshConnection: ssh,
-          defaultDir: cwd
+          defaultDir: cwd,
         });
       }
 
@@ -484,7 +492,12 @@ registerToolConditional(
       // Log command execution
       const startTime = logger.logCommand(serverName, fullCommand, workingDir);
 
-      const result = await execCommandWithTimeout(ssh, fullCommand, { platform: serverConfig?.platform }, cappedTimeout);
+      const result = await execCommandWithTimeout(
+        ssh,
+        fullCommand,
+        { platform: serverConfig?.platform },
+        cappedTimeout
+      );
 
       // Log command result
       logger.logCommandResult(serverName, fullCommand, startTime, result);
@@ -494,7 +507,7 @@ registerToolConditional(
         await executeHook('post-bench-update', {
           server: serverName,
           sshConnection: ssh,
-          defaultDir: cwd
+          defaultDir: cwd,
         });
       }
 
@@ -520,7 +533,7 @@ registerToolConditional(
     } catch (error) {
       logger.error('ssh_execute failed', {
         server: serverName,
-        error: error.message
+        error: error.message,
       });
 
       return {
@@ -531,11 +544,11 @@ registerToolConditional(
               server: serverName,
               success: false,
               error: truncateOutput(error.message, 1000),
-              code: -1
+              code: -1,
             }),
           },
         ],
-        isError: true
+        isError: true,
       };
     }
   }
@@ -548,8 +561,8 @@ registerToolConditional(
     inputSchema: {
       server: z.string().describe('Server name'),
       localPath: z.string().describe('Local file path'),
-      remotePath: z.string().describe('Remote destination path')
-    }
+      remotePath: z.string().describe('Remote destination path'),
+    },
   },
   async ({ server: serverName, localPath, remotePath }) => {
     try {
@@ -564,7 +577,7 @@ registerToolConditional(
       logger.logTransfer('upload', serverName, localPath, remotePath, {
         success: true,
         size: fileStats.size,
-        duration: `${Date.now() - startTime}ms`
+        duration: `${Date.now() - startTime}ms`,
       });
 
       return {
@@ -578,7 +591,7 @@ registerToolConditional(
     } catch (error) {
       logger.logTransfer('upload', serverName, localPath, remotePath, {
         success: false,
-        error: error.message
+        error: error.message,
       });
       return {
         content: [
@@ -599,8 +612,8 @@ registerToolConditional(
     inputSchema: {
       server: z.string().describe('Server name'),
       remotePath: z.string().describe('Remote file path'),
-      localPath: z.string().describe('Local destination path')
-    }
+      localPath: z.string().describe('Local destination path'),
+    },
   },
   async ({ server: serverName, remotePath, localPath }) => {
     try {
@@ -615,7 +628,7 @@ registerToolConditional(
       logger.logTransfer('download', serverName, remotePath, localPath, {
         success: true,
         size: fileStats.size,
-        duration: `${Date.now() - startTime}ms`
+        duration: `${Date.now() - startTime}ms`,
       });
 
       return {
@@ -629,7 +642,7 @@ registerToolConditional(
     } catch (error) {
       logger.logTransfer('download', serverName, remotePath, localPath, {
         success: false,
-        error: error.message
+        error: error.message,
       });
       return {
         content: [
@@ -657,10 +670,21 @@ registerToolConditional(
       compress: z.boolean().optional().describe('Compress during transfer'),
       verbose: z.boolean().optional().describe('Show detailed progress'),
       checksum: z.boolean().optional().describe('Use checksum instead of timestamp for comparison'),
-      timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000)')
-    }
+      timeout: z.number().optional().describe('Timeout in milliseconds (default: 30000)'),
+    },
   },
-  async ({ server: serverName, source, destination, exclude = [], dryRun = false, delete: deleteFiles = false, compress = true, verbose = false, checksum = false, timeout = 30000 }) => {
+  async ({
+    server: serverName,
+    source,
+    destination,
+    exclude = [],
+    dryRun = false,
+    delete: deleteFiles = false,
+    compress = true,
+    verbose = false,
+    checksum = false,
+    timeout = 30000,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
       const servers = loadServerConfig();
@@ -677,9 +701,9 @@ registerToolConditional(
             content: [
               {
                 type: 'text',
-                text: `❌ Error: ssh_sync with password authentication requires sshpass.\n\nThe server '${serverName}' uses password authentication.\nPlease install sshpass: brew install hudochenkov/sshpass/sshpass (macOS) or apt-get install sshpass (Linux)\n\nAlternatively, use ssh_upload or ssh_download for single file transfers.`
-              }
-            ]
+                text: `❌ Error: ssh_sync with password authentication requires sshpass.\n\nThe server '${serverName}' uses password authentication.\nPlease install sshpass: brew install hudochenkov/sshpass/sshpass (macOS) or apt-get install sshpass (Linux)\n\nAlternatively, use ssh_upload or ssh_download for single file transfers.`,
+              },
+            ],
           };
         }
       }
@@ -696,11 +720,13 @@ registerToolConditional(
 
       // Validate direction
       if ((isLocalSource && isLocalDest) || (isRemoteSource && isRemoteDest)) {
-        throw new Error('Source and destination must be different (one local, one remote). Use prefixes: local: or remote:');
+        throw new Error(
+          'Source and destination must be different (one local, one remote). Use prefixes: local: or remote:'
+        );
       }
 
       // If no prefixes, assume old format (local source to remote dest)
-      const direction = (isLocalSource || (!isLocalSource && !isRemoteSource)) ? 'push' : 'pull';
+      const direction = isLocalSource || (!isLocalSource && !isRemoteSource) ? 'push' : 'pull';
 
       // Build rsync command
       let rsyncOptions = ['-avz'];
@@ -727,7 +753,7 @@ registerToolConditional(
       }
 
       // Add exclude patterns
-      exclude.forEach(pattern => {
+      exclude.forEach((pattern) => {
         rsyncOptions.push('--exclude', pattern);
       });
 
@@ -752,9 +778,9 @@ registerToolConditional(
 
       // Different options based on authentication method
       if (serverConfig.keypath) {
-        sshOptions.push('-o BatchMode=yes');           // No password prompts
+        sshOptions.push('-o BatchMode=yes'); // No password prompts
         sshOptions.push('-o StrictHostKeyChecking=accept-new'); // Accept new keys, reject changed ones
-        sshOptions.push('-o ConnectTimeout=10');        // Connection timeout
+        sshOptions.push('-o ConnectTimeout=10'); // Connection timeout
 
         const keyPath = serverConfig.keypath.replace('~', os.homedir());
         sshOptions.push(`-i ${keyPath}`);
@@ -773,7 +799,7 @@ registerToolConditional(
         source: direction === 'push' ? localPath : remotePath,
         destination: direction === 'push' ? remotePath : localPath,
         dryRun,
-        deleteFiles
+        deleteFiles,
       });
 
       const startTime = Date.now();
@@ -798,7 +824,7 @@ registerToolConditional(
           rsyncArgs.push('rsync');
 
           // Add rsync options
-          rsyncOptions.forEach(opt => rsyncArgs.push(opt));
+          rsyncOptions.forEach((opt) => rsyncArgs.push(opt));
 
           // Add SSH command
           const sshCmd = `ssh ${sshOptions.join(' ')}`;
@@ -808,7 +834,7 @@ registerToolConditional(
           rsyncCommand = 'rsync';
 
           // Add rsync options
-          rsyncOptions.forEach(opt => rsyncArgs.push(opt));
+          rsyncOptions.forEach((opt) => rsyncArgs.push(opt));
 
           // Add SSH command with all options
           const sshCmd = `ssh ${sshOptions.join(' ')}`;
@@ -829,7 +855,7 @@ registerToolConditional(
 
         const rsyncProcess = spawn(rsyncCommand, rsyncArgs, {
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: processEnv
+          env: processEnv,
         });
 
         // Set timeout
@@ -876,7 +902,7 @@ registerToolConditional(
               server: serverName,
               exitCode: code,
               error: errorOutput,
-              duration: `${duration}ms`
+              duration: `${duration}ms`,
             });
 
             // Check if it's an SSH key error
@@ -890,13 +916,16 @@ registerToolConditional(
 
               errorMsg += '\n📍 To fix this issue:\n';
               errorMsg += '1. Verify the server identity\n';
-              errorMsg += '2. Use \'ssh_key_manage\' tool with action \'verify\' to check the key\n';
-              errorMsg += '3. Use \'ssh_key_manage\' tool with action \'accept\' to update the key if you trust the server\n';
+              errorMsg += "2. Use 'ssh_key_manage' tool with action 'verify' to check the key\n";
+              errorMsg +=
+                "3. Use 'ssh_key_manage' tool with action 'accept' to update the key if you trust the server\n";
               errorMsg += `\nOriginal error:\n${errorOutput}`;
 
               reject(new Error(errorMsg));
             } else {
-              reject(new Error(`Rsync failed with exit code ${code}: ${errorOutput || 'Unknown error'}`));
+              reject(
+                new Error(`Rsync failed with exit code ${code}: ${errorOutput || 'Unknown error'}`)
+              );
             }
             return;
           }
@@ -905,7 +934,7 @@ registerToolConditional(
           let stats = {
             filesTransferred: 0,
             totalSize: 0,
-            totalTime: duration
+            totalTime: duration,
           };
 
           // Extract statistics from rsync output
@@ -923,7 +952,7 @@ registerToolConditional(
             duration: `${duration}ms`,
             filesTransferred: stats.filesTransferred,
             totalSize: stats.totalSize,
-            dryRun
+            dryRun,
           });
 
           // Format output
@@ -952,12 +981,15 @@ registerToolConditional(
           if (verbose && output.length < 5000) {
             resultText += '\n📋 Sync statistics:\n';
             // Only show relevant stats lines
-            const statsLines = output.split('\n').filter(line =>
-              line.includes('Number of') ||
-              line.includes('Total') ||
-              line.includes('sent') ||
-              line.includes('received')
-            );
+            const statsLines = output
+              .split('\n')
+              .filter(
+                (line) =>
+                  line.includes('Number of') ||
+                  line.includes('Total') ||
+                  line.includes('sent') ||
+                  line.includes('received')
+              );
             if (statsLines.length > 0) {
               resultText += statsLines.join('\n');
             }
@@ -967,9 +999,9 @@ registerToolConditional(
             content: [
               {
                 type: 'text',
-                text: resultText
-              }
-            ]
+                text: resultText,
+              },
+            ],
           });
         });
       });
@@ -978,9 +1010,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: `❌ Sync error: ${error.message}`
-          }
-        ]
+            text: `❌ Sync error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -995,8 +1027,8 @@ registerToolConditional(
       file: z.string().describe('Path to the log file to tail'),
       lines: z.number().optional().describe('Number of lines to show initially (default: 10)'),
       follow: z.boolean().optional().describe('Follow file for new content (default: true)'),
-      grep: z.string().optional().describe('Filter lines with grep pattern')
-    }
+      grep: z.string().optional().describe('Filter lines with grep pattern'),
+    },
   },
   async ({ server: serverName, file, lines = 10, follow = true, grep }) => {
     try {
@@ -1018,7 +1050,7 @@ registerToolConditional(
         file,
         lines,
         follow,
-        grep
+        grep,
       });
 
       // For follow mode, we need to handle streaming
@@ -1034,22 +1066,27 @@ registerToolConditional(
           },
           onStderr: (chunk) => {
             console.error(`[ERROR] ${chunk}`);
-          }
+          },
         });
 
         return {
           content: [
             {
               type: 'text',
-              text: `📜 Tailing ${file} on ${serverName}\nSession ID: ${sessionId}\nShowing last ${lines} lines${grep ? ` (filtered: ${grep})` : ''}\n\n⚠️ Note: In follow mode, output is streamed to stderr.\nTo stop tailing, you'll need to kill the session.`
-            }
-          ]
+              text: `📜 Tailing ${file} on ${serverName}\nSession ID: ${sessionId}\nShowing last ${lines} lines${grep ? ` (filtered: ${grep})` : ''}\n\n⚠️ Note: In follow mode, output is streamed to stderr.\nTo stop tailing, you'll need to kill the session.`,
+            },
+          ],
         };
       } else {
         // Non-follow mode - just get the output
         const tailServers = loadServerConfig();
         const tailServerConfig = tailServers[serverName.toLowerCase()];
-        const result = await execCommandWithTimeout(ssh, command, { platform: tailServerConfig?.platform }, 15000);
+        const result = await execCommandWithTimeout(
+          ssh,
+          command,
+          { platform: tailServerConfig?.platform },
+          15000
+        );
 
         if (result.code !== 0) {
           throw new Error(result.stderr || 'Failed to tail file');
@@ -1057,31 +1094,31 @@ registerToolConditional(
 
         logger.info(`Tail completed on ${serverName}`, {
           file,
-          lines: result.stdout.split('\n').length
+          lines: result.stdout.split('\n').length,
         });
 
         return {
           content: [
             {
               type: 'text',
-              text: `📜 Last ${lines} lines of ${file} on ${serverName}${grep ? ` (filtered: ${grep})` : ''}:\n\n${result.stdout}`
-            }
-          ]
+              text: `📜 Last ${lines} lines of ${file} on ${serverName}${grep ? ` (filtered: ${grep})` : ''}:\n\n${result.stdout}`,
+            },
+          ],
         };
       }
     } catch (error) {
       logger.error(`Tail failed on ${serverName}`, {
         file,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Tail error: ${error.message}`
-          }
-        ]
+            text: `❌ Tail error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1093,10 +1130,16 @@ registerToolConditional(
     description: 'Monitor system resources (CPU, RAM, disk) on remote server',
     inputSchema: {
       server: z.string().describe('Server name from configuration'),
-      type: z.enum(['overview', 'cpu', 'memory', 'disk', 'network', 'process']).optional().describe('Type of monitoring (default: overview)'),
-      interval: z.number().optional().describe('Update interval in seconds for continuous monitoring'),
-      duration: z.number().optional().describe('Duration in seconds for continuous monitoring')
-    }
+      type: z
+        .enum(['overview', 'cpu', 'memory', 'disk', 'network', 'process'])
+        .optional()
+        .describe('Type of monitoring (default: overview)'),
+      interval: z
+        .number()
+        .optional()
+        .describe('Update interval in seconds for continuous monitoring'),
+      duration: z.number().optional().describe('Duration in seconds for continuous monitoring'),
+    },
   },
   async ({ server: serverName, type = 'overview', interval, duration }) => {
     try {
@@ -1105,7 +1148,7 @@ registerToolConditional(
       logger.info(`Starting system monitoring on ${serverName}`, {
         type,
         interval,
-        duration
+        duration,
       });
 
       let commands = {};
@@ -1113,45 +1156,45 @@ registerToolConditional(
 
       // Define monitoring commands based on type
       switch (type) {
-      case 'cpu':
-        commands.cpu = 'top -bn1 | head -20';
-        commands.load = 'uptime';
-        commands.cores = 'nproc';
-        break;
+        case 'cpu':
+          commands.cpu = 'top -bn1 | head -20';
+          commands.load = 'uptime';
+          commands.cores = 'nproc';
+          break;
 
-      case 'memory':
-        commands.memory = 'free -h';
-        commands.swap = 'swapon --show';
-        commands.top_mem = 'ps aux --sort=-%mem | head -10';
-        break;
+        case 'memory':
+          commands.memory = 'free -h';
+          commands.swap = 'swapon --show';
+          commands.top_mem = 'ps aux --sort=-%mem | head -10';
+          break;
 
-      case 'disk':
-        commands.disk = 'df -h';
-        commands.inodes = 'df -i';
-        commands.io = 'iostat -x 1 2 | tail -n +4';
-        break;
+        case 'disk':
+          commands.disk = 'df -h';
+          commands.inodes = 'df -i';
+          commands.io = 'iostat -x 1 2 | tail -n +4';
+          break;
 
-      case 'network':
-        commands.interfaces = 'ip -s link show';
-        commands.connections = 'ss -tunap | head -20';
-        commands.netstat = 'netstat -i';
-        break;
+        case 'network':
+          commands.interfaces = 'ip -s link show';
+          commands.connections = 'ss -tunap | head -20';
+          commands.netstat = 'netstat -i';
+          break;
 
-      case 'process':
-        commands.process = 'ps aux --sort=-%cpu | head -20';
-        commands.count = 'ps aux | wc -l';
-        commands.zombies = 'ps aux | grep -c defunct || echo 0';
-        break;
+        case 'process':
+          commands.process = 'ps aux --sort=-%cpu | head -20';
+          commands.count = 'ps aux | wc -l';
+          commands.zombies = 'ps aux | grep -c defunct || echo 0';
+          break;
 
-      case 'overview':
-      default:
-        commands.uptime = 'uptime';
-        commands.cpu = 'mpstat 1 1 2>/dev/null || top -bn1 | grep \'Cpu\'';
-        commands.memory = 'free -h';
-        commands.disk = 'df -h | grep -E \'^/dev/\' | head -5';
-        commands.load = 'cat /proc/loadavg';
-        commands.processes = 'ps aux | wc -l';
-        break;
+        case 'overview':
+        default:
+          commands.uptime = 'uptime';
+          commands.cpu = "mpstat 1 1 2>/dev/null || top -bn1 | grep 'Cpu'";
+          commands.memory = 'free -h';
+          commands.disk = "df -h | grep -E '^/dev/' | head -5";
+          commands.load = 'cat /proc/loadavg';
+          commands.processes = 'ps aux | wc -l';
+          break;
       }
 
       // Execute all monitoring commands
@@ -1161,7 +1204,12 @@ registerToolConditional(
 
       for (const [key, cmd] of Object.entries(commands)) {
         try {
-          const result = await execCommandWithTimeout(ssh, cmd, { platform: monServerConfig?.platform }, 10000);
+          const result = await execCommandWithTimeout(
+            ssh,
+            cmd,
+            { platform: monServerConfig?.platform },
+            10000
+          );
           if (result.code === 0) {
             output[key] = result.stdout.trim();
           } else {
@@ -1181,51 +1229,51 @@ registerToolConditional(
       formattedOutput += '━'.repeat(50) + '\n\n';
 
       switch (type) {
-      case 'overview':
-        formattedOutput += `⏱️ UPTIME\n${output.uptime || 'N/A'}\n\n`;
-        formattedOutput += `💻 CPU\n${output.cpu || 'N/A'}\n\n`;
-        formattedOutput += `📈 LOAD AVERAGE\n${output.load || 'N/A'}\n\n`;
-        formattedOutput += `💾 MEMORY\n${output.memory || 'N/A'}\n\n`;
-        formattedOutput += `💿 DISK USAGE\n${output.disk || 'N/A'}\n\n`;
-        formattedOutput += `📝 PROCESSES: ${output.processes || 'N/A'}\n`;
-        break;
+        case 'overview':
+          formattedOutput += `⏱️ UPTIME\n${output.uptime || 'N/A'}\n\n`;
+          formattedOutput += `💻 CPU\n${output.cpu || 'N/A'}\n\n`;
+          formattedOutput += `📈 LOAD AVERAGE\n${output.load || 'N/A'}\n\n`;
+          formattedOutput += `💾 MEMORY\n${output.memory || 'N/A'}\n\n`;
+          formattedOutput += `💿 DISK USAGE\n${output.disk || 'N/A'}\n\n`;
+          formattedOutput += `📝 PROCESSES: ${output.processes || 'N/A'}\n`;
+          break;
 
-      case 'cpu':
-        formattedOutput += `🖥️ CPU CORES: ${output.cores || 'N/A'}\n\n`;
-        formattedOutput += `📊 LOAD\n${output.load || 'N/A'}\n\n`;
-        formattedOutput += `📈 TOP PROCESSES\n${output.cpu || 'N/A'}\n`;
-        break;
+        case 'cpu':
+          formattedOutput += `🖥️ CPU CORES: ${output.cores || 'N/A'}\n\n`;
+          formattedOutput += `📊 LOAD\n${output.load || 'N/A'}\n\n`;
+          formattedOutput += `📈 TOP PROCESSES\n${output.cpu || 'N/A'}\n`;
+          break;
 
-      case 'memory':
-        formattedOutput += `💾 MEMORY USAGE\n${output.memory || 'N/A'}\n\n`;
-        formattedOutput += `🔄 SWAP\n${output.swap || 'No swap configured'}\n\n`;
-        formattedOutput += `📊 TOP MEMORY CONSUMERS\n${output.top_mem || 'N/A'}\n`;
-        break;
+        case 'memory':
+          formattedOutput += `💾 MEMORY USAGE\n${output.memory || 'N/A'}\n\n`;
+          formattedOutput += `🔄 SWAP\n${output.swap || 'No swap configured'}\n\n`;
+          formattedOutput += `📊 TOP MEMORY CONSUMERS\n${output.top_mem || 'N/A'}\n`;
+          break;
 
-      case 'disk':
-        formattedOutput += `💿 DISK SPACE\n${output.disk || 'N/A'}\n\n`;
-        formattedOutput += `📁 INODE USAGE\n${output.inodes || 'N/A'}\n\n`;
-        formattedOutput += `⚡ I/O STATS\n${output.io || 'N/A'}\n`;
-        break;
+        case 'disk':
+          formattedOutput += `💿 DISK SPACE\n${output.disk || 'N/A'}\n\n`;
+          formattedOutput += `📁 INODE USAGE\n${output.inodes || 'N/A'}\n\n`;
+          formattedOutput += `⚡ I/O STATS\n${output.io || 'N/A'}\n`;
+          break;
 
-      case 'network':
-        formattedOutput += `🌐 NETWORK INTERFACES\n${output.interfaces || 'N/A'}\n\n`;
-        formattedOutput += `🔌 CONNECTIONS\n${output.connections || 'N/A'}\n\n`;
-        formattedOutput += `📊 INTERFACE STATS\n${output.netstat || 'N/A'}\n`;
-        break;
+        case 'network':
+          formattedOutput += `🌐 NETWORK INTERFACES\n${output.interfaces || 'N/A'}\n\n`;
+          formattedOutput += `🔌 CONNECTIONS\n${output.connections || 'N/A'}\n\n`;
+          formattedOutput += `📊 INTERFACE STATS\n${output.netstat || 'N/A'}\n`;
+          break;
 
-      case 'process':
-        formattedOutput += `📝 PROCESS COUNT: ${output.count || 'N/A'}\n`;
-        formattedOutput += `⚠️ ZOMBIE PROCESSES: ${output.zombies || '0'}\n\n`;
-        formattedOutput += `📊 TOP PROCESSES BY CPU\n${output.process || 'N/A'}\n`;
-        break;
+        case 'process':
+          formattedOutput += `📝 PROCESS COUNT: ${output.count || 'N/A'}\n`;
+          formattedOutput += `⚠️ ZOMBIE PROCESSES: ${output.zombies || '0'}\n\n`;
+          formattedOutput += `📊 TOP PROCESSES BY CPU\n${output.process || 'N/A'}\n`;
+          break;
       }
 
       // Log monitoring results
       logger.info(`System monitoring completed on ${serverName}`, {
         type,
         duration: `${monitoringDuration}ms`,
-        metrics: Object.keys(output).length
+        metrics: Object.keys(output).length,
       });
 
       // If continuous monitoring requested
@@ -1238,23 +1286,23 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: formattedOutput
-          }
-        ]
+            text: formattedOutput,
+          },
+        ],
       };
     } catch (error) {
       logger.error(`Monitoring failed on ${serverName}`, {
         type,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Monitor error: ${error.message}`
-          }
-        ]
+            text: `❌ Monitor error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1268,8 +1316,8 @@ registerToolConditional(
       limit: z.number().optional().describe('Number of commands to show (default: 20)'),
       server: z.string().optional().describe('Filter by server name'),
       success: z.boolean().optional().describe('Filter by success/failure'),
-      search: z.string().optional().describe('Search in commands')
-    }
+      search: z.string().optional().describe('Search in commands'),
+    },
   },
   async ({ limit = 20, server, success, search }) => {
     try {
@@ -1278,15 +1326,15 @@ registerToolConditional(
 
       // Apply filters
       if (server) {
-        history = history.filter(h => h.server?.toLowerCase().includes(server.toLowerCase()));
+        history = history.filter((h) => h.server?.toLowerCase().includes(server.toLowerCase()));
       }
 
       if (success !== undefined) {
-        history = history.filter(h => h.success === success);
+        history = history.filter((h) => h.success === success);
       }
 
       if (search) {
-        history = history.filter(h => h.command?.toLowerCase().includes(search.toLowerCase()));
+        history = history.filter((h) => h.command?.toLowerCase().includes(search.toLowerCase()));
       }
 
       // Limit results
@@ -1338,25 +1386,25 @@ registerToolConditional(
       logger.info('Command history retrieved', {
         limit,
         filters: filters.length,
-        results: history.length
+        results: history.length,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Error retrieving history: ${error.message}`
-          }
-        ]
+            text: `❌ Error retrieving history: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1370,8 +1418,8 @@ registerToolConditional(
     description: 'Start a persistent SSH session that maintains state and context',
     inputSchema: {
       server: z.string().describe('Server name from configuration'),
-      name: z.string().optional().describe('Optional session name for identification')
-    }
+      name: z.string().optional().describe('Optional session name for identification'),
+    },
   },
   async ({ server: serverName, name }) => {
     try {
@@ -1383,30 +1431,30 @@ registerToolConditional(
       logger.info('SSH session started', {
         id: session.id,
         server: serverName,
-        name: sessionName
+        name: sessionName,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `🚀 SSH Session Started\n\nSession ID: ${session.id}\nServer: ${serverName}\nName: ${sessionName}\nState: ${session.state}\nWorking Directory: ${session.context.cwd}\n\nUse ssh_session_send to execute commands in this session.\nUse ssh_session_close to terminate the session.`
-          }
-        ]
+            text: `🚀 SSH Session Started\n\nSession ID: ${session.id}\nServer: ${serverName}\nName: ${sessionName}\nState: ${session.state}\nWorking Directory: ${session.context.cwd}\n\nUse ssh_session_send to execute commands in this session.\nUse ssh_session_close to terminate the session.`,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Failed to start SSH session', {
         server: serverName,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Failed to start session: ${error.message}`
-          }
-        ]
+            text: `❌ Failed to start session: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1419,8 +1467,8 @@ registerToolConditional(
     inputSchema: {
       session: z.string().describe('Session ID from ssh_session_start'),
       command: z.string().describe('Command to execute in the session'),
-      timeout: z.number().optional().describe('Command timeout in milliseconds (default: 30000)')
-    }
+      timeout: z.number().optional().describe('Command timeout in milliseconds (default: 30000)'),
+    },
   },
   async ({ session: sessionId, command, timeout = 30000 }) => {
     try {
@@ -1434,7 +1482,7 @@ registerToolConditional(
         session: sessionId,
         command: command.substring(0, 50),
         success: result.success,
-        duration: `${duration}ms`
+        duration: `${duration}ms`,
       });
 
       let output = `📟 Session: ${sessionId}\n`;
@@ -1459,24 +1507,24 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Failed to send command to session', {
         session: sessionId,
         command,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Session error: ${error.message}`
-          }
-        ]
+            text: `❌ Session error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1487,8 +1535,8 @@ registerToolConditional(
   {
     description: 'List all active SSH sessions',
     inputSchema: {
-      server: z.string().optional().describe('Filter by server name')
-    }
+      server: z.string().optional().describe('Filter by server name'),
+    },
   },
   async ({ server }) => {
     try {
@@ -1496,9 +1544,7 @@ registerToolConditional(
 
       // Filter by server if specified
       if (server) {
-        sessions = sessions.filter(s =>
-          s.server.toLowerCase().includes(server.toLowerCase())
-        );
+        sessions = sessions.filter((s) => s.server.toLowerCase().includes(server.toLowerCase()));
       }
 
       let output = '📋 Active SSH Sessions\n';
@@ -1536,25 +1582,25 @@ registerToolConditional(
 
       logger.info('Listed SSH sessions', {
         total: sessions.length,
-        filter: server
+        filter: server,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Error listing sessions: ${error.message}`
-          }
-        ]
+            text: `❌ Error listing sessions: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1565,8 +1611,8 @@ registerToolConditional(
   {
     description: 'Close an SSH session',
     inputSchema: {
-      session: z.string().describe('Session ID to close (or "all" to close all sessions)')
-    }
+      session: z.string().describe('Session ID to close (or "all" to close all sessions)'),
+    },
   },
   async ({ session: sessionId }) => {
     try {
@@ -1574,7 +1620,7 @@ registerToolConditional(
         const sessions = listSessions();
         const count = sessions.length;
 
-        sessions.forEach(s => {
+        sessions.forEach((s) => {
           try {
             closeSession(s.id);
           } catch (err) {
@@ -1588,9 +1634,9 @@ registerToolConditional(
           content: [
             {
               type: 'text',
-              text: `🔚 Closed ${count} SSH sessions`
-            }
-          ]
+              text: `🔚 Closed ${count} SSH sessions`,
+            },
+          ],
         };
       } else {
         closeSession(sessionId);
@@ -1601,24 +1647,24 @@ registerToolConditional(
           content: [
             {
               type: 'text',
-              text: `🔚 Session closed: ${sessionId}`
-            }
-          ]
+              text: `🔚 Session closed: ${sessionId}`,
+            },
+          ],
         };
       }
     } catch (error) {
       logger.error('Failed to close session', {
         session: sessionId,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Failed to close session: ${error.message}`
-          }
-        ]
+            text: `❌ Failed to close session: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1644,11 +1690,14 @@ registerToolConditional(
     inputSchema: {
       group: z.string().describe('Group name (e.g., "production", "staging", "all")'),
       command: z.string().describe('Command to execute'),
-      strategy: z.enum(['parallel', 'sequential', 'rolling']).optional().describe('Execution strategy'),
+      strategy: z
+        .enum(['parallel', 'sequential', 'rolling'])
+        .optional()
+        .describe('Execution strategy'),
       delay: z.number().optional().describe('Delay between servers in ms (for rolling)'),
       stopOnError: z.boolean().optional().describe('Stop execution on first error'),
-      cwd: z.string().optional().describe('Working directory')
-    }
+      cwd: z.string().optional().describe('Working directory'),
+    },
   },
   async ({ group: groupName, command, strategy, delay, stopOnError, cwd }) => {
     try {
@@ -1664,13 +1713,18 @@ registerToolConditional(
           const workingDir = cwd || serverConfig?.default_dir;
           const fullCommand = workingDir ? `cd ${workingDir} && ${command}` : command;
 
-          const execResult = await execCommandWithTimeout(ssh, fullCommand, { platform: serverConfig?.platform }, 30000);
+          const execResult = await execCommandWithTimeout(
+            ssh,
+            fullCommand,
+            { platform: serverConfig?.platform },
+            30000
+          );
 
           return {
             stdout: execResult.stdout,
             stderr: execResult.stderr,
             code: execResult.code,
-            success: execResult.code === 0
+            success: execResult.code === 0,
           };
         },
         { strategy, delay, stopOnError }
@@ -1712,30 +1766,30 @@ registerToolConditional(
       logger.info('Group command executed', {
         group: groupName,
         command: command.substring(0, 50),
-        ...result.summary
+        ...result.summary,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Group execution failed', {
         group: groupName,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Group execution error: ${error.message}`
-          }
-        ]
+            text: `❌ Group execution error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1746,14 +1800,19 @@ registerToolConditional(
   {
     description: 'Manage server groups (create, update, delete, list)',
     inputSchema: {
-      action: z.enum(['create', 'update', 'delete', 'list', 'add-servers', 'remove-servers']).describe('Action to perform'),
+      action: z
+        .enum(['create', 'update', 'delete', 'list', 'add-servers', 'remove-servers'])
+        .describe('Action to perform'),
       name: z.string().optional().describe('Group name'),
       servers: z.array(z.string()).optional().describe('Server names'),
       description: z.string().optional().describe('Group description'),
-      strategy: z.enum(['parallel', 'sequential', 'rolling']).optional().describe('Execution strategy'),
+      strategy: z
+        .enum(['parallel', 'sequential', 'rolling'])
+        .optional()
+        .describe('Execution strategy'),
       delay: z.number().optional().describe('Delay between servers in ms'),
-      stopOnError: z.boolean().optional().describe('Stop on error flag')
-    }
+      stopOnError: z.boolean().optional().describe('Stop on error flag'),
+    },
   },
   async ({ action, name, servers, description, strategy, delay, stopOnError }) => {
     try {
@@ -1761,115 +1820,115 @@ registerToolConditional(
       let output = '';
 
       switch (action) {
-      case 'create':
-        if (!name) throw new Error('Group name required for create');
-        result = createGroup(name, servers || [], {
-          description,
-          strategy,
-          delay,
-          stopOnError
-        });
-        output = `✅ Group '${name}' created\n`;
-        output += `Servers: ${result.servers.join(', ') || 'none'}\n`;
-        output += `Strategy: ${result.strategy}\n`;
-        break;
+        case 'create':
+          if (!name) throw new Error('Group name required for create');
+          result = createGroup(name, servers || [], {
+            description,
+            strategy,
+            delay,
+            stopOnError,
+          });
+          output = `✅ Group '${name}' created\n`;
+          output += `Servers: ${result.servers.join(', ') || 'none'}\n`;
+          output += `Strategy: ${result.strategy}\n`;
+          break;
 
-      case 'update':
-        if (!name) throw new Error('Group name required for update');
-        result = updateGroup(name, {
-          servers,
-          description,
-          strategy,
-          delay,
-          stopOnError
-        });
-        output = `✅ Group '${name}' updated\n`;
-        output += `Servers: ${result.servers.join(', ')}\n`;
-        break;
+        case 'update':
+          if (!name) throw new Error('Group name required for update');
+          result = updateGroup(name, {
+            servers,
+            description,
+            strategy,
+            delay,
+            stopOnError,
+          });
+          output = `✅ Group '${name}' updated\n`;
+          output += `Servers: ${result.servers.join(', ')}\n`;
+          break;
 
-      case 'delete':
-        if (!name) throw new Error('Group name required for delete');
-        deleteGroup(name);
-        output = `✅ Group '${name}' deleted`;
-        break;
+        case 'delete':
+          if (!name) throw new Error('Group name required for delete');
+          deleteGroup(name);
+          output = `✅ Group '${name}' deleted`;
+          break;
 
-      case 'add-servers':
-        if (!name) throw new Error('Group name required');
-        if (!servers || servers.length === 0) throw new Error('Servers required');
-        result = addServersToGroup(name, servers);
-        output = `✅ Added ${servers.length} servers to '${name}'\n`;
-        output += `Total servers: ${result.servers.length}\n`;
-        output += `Members: ${result.servers.join(', ')}`;
-        break;
+        case 'add-servers':
+          if (!name) throw new Error('Group name required');
+          if (!servers || servers.length === 0) throw new Error('Servers required');
+          result = addServersToGroup(name, servers);
+          output = `✅ Added ${servers.length} servers to '${name}'\n`;
+          output += `Total servers: ${result.servers.length}\n`;
+          output += `Members: ${result.servers.join(', ')}`;
+          break;
 
-      case 'remove-servers':
-        if (!name) throw new Error('Group name required');
-        if (!servers || servers.length === 0) throw new Error('Servers required');
-        result = removeServersFromGroup(name, servers);
-        output = `✅ Removed ${servers.length} servers from '${name}'\n`;
-        output += `Remaining: ${result.servers.length}\n`;
-        output += `Members: ${result.servers.join(', ') || 'none'}`;
-        break;
+        case 'remove-servers':
+          if (!name) throw new Error('Group name required');
+          if (!servers || servers.length === 0) throw new Error('Servers required');
+          result = removeServersFromGroup(name, servers);
+          output = `✅ Removed ${servers.length} servers from '${name}'\n`;
+          output += `Remaining: ${result.servers.length}\n`;
+          output += `Members: ${result.servers.join(', ') || 'none'}`;
+          break;
 
-      case 'list': {
-        const groups = listGroups();
-        output = '📋 Server Groups\n';
-        output += '━'.repeat(60) + '\n\n';
+        case 'list': {
+          const groups = listGroups();
+          output = '📋 Server Groups\n';
+          output += '━'.repeat(60) + '\n\n';
 
-        groups.forEach(group => {
-          output += `📁 ${group.name}`;
-          if (group.dynamic) output += ' (dynamic)';
-          output += '\n';
-          output += `   Description: ${group.description}\n`;
-          output += `   Servers: ${group.serverCount} servers\n`;
-          if (group.servers.length > 0) {
-            output += `   Members: ${group.servers.slice(0, 5).join(', ')}`;
-            if (group.servers.length > 5) output += ` ... +${group.servers.length - 5} more`;
+          groups.forEach((group) => {
+            output += `📁 ${group.name}`;
+            if (group.dynamic) output += ' (dynamic)';
             output += '\n';
-          }
-          output += `   Strategy: ${group.strategy || 'parallel'}\n`;
-          if (group.delay) output += `   Delay: ${group.delay}ms\n`;
-          if (group.stopOnError) output += '   Stop on error: yes\n';
-          output += '\n';
-        });
+            output += `   Description: ${group.description}\n`;
+            output += `   Servers: ${group.serverCount} servers\n`;
+            if (group.servers.length > 0) {
+              output += `   Members: ${group.servers.slice(0, 5).join(', ')}`;
+              if (group.servers.length > 5) output += ` ... +${group.servers.length - 5} more`;
+              output += '\n';
+            }
+            output += `   Strategy: ${group.strategy || 'parallel'}\n`;
+            if (group.delay) output += `   Delay: ${group.delay}ms\n`;
+            if (group.stopOnError) output += '   Stop on error: yes\n';
+            output += '\n';
+          });
 
-        output += '━'.repeat(60) + '\n';
-        output += `Total groups: ${groups.length}`;
-        break;
-      }
+          output += '━'.repeat(60) + '\n';
+          output += `Total groups: ${groups.length}`;
+          break;
+        }
 
-      default:
-        throw new Error(`Unknown action: ${action}`);
+        default:
+          throw new Error(`Unknown action: ${action}`);
       }
 
       logger.info('Group management action completed', {
         action,
         name,
-        servers: servers?.length
+        servers: servers?.length,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Group management failed', {
         action,
         name,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Group management error: ${error.message}`
-          }
-        ]
+            text: `❌ Group management error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -1879,7 +1938,7 @@ registerToolConditional(
   'ssh_list_servers',
   {
     description: 'List all configured SSH servers',
-    inputSchema: {}
+    inputSchema: {},
   },
   async () => {
     const servers = loadServerConfig();
@@ -1890,7 +1949,7 @@ registerToolConditional(
       port: config.port || '22',
       auth: config.password ? 'password' : 'key',
       defaultDir: config.default_dir || '',
-      description: config.description || ''
+      description: config.description || '',
     }));
 
     return {
@@ -1911,18 +1970,28 @@ registerToolConditional(
     description: 'Deploy files to remote server with automatic permission handling',
     inputSchema: {
       server: z.string().describe('Server name or alias'),
-      files: z.array(z.object({
-        local: z.string().describe('Local file path'),
-        remote: z.string().describe('Remote file path')
-      })).describe('Array of files to deploy'),
-      options: z.object({
-        owner: z.string().optional().describe('Set file owner (e.g., "user:group")'),
-        permissions: z.string().optional().describe('Set file permissions (e.g., "644")'),
-        backup: z.boolean().optional().default(true).describe('Backup existing files'),
-        restart: z.string().optional().describe('Service to restart after deployment'),
-        sudoPassword: z.string().optional().describe('Sudo password if needed (use with caution)')
-      }).optional().describe('Deployment options')
-    }
+      files: z
+        .array(
+          z.object({
+            local: z.string().describe('Local file path'),
+            remote: z.string().describe('Remote file path'),
+          })
+        )
+        .describe('Array of files to deploy'),
+      options: z
+        .object({
+          owner: z.string().optional().describe('Set file owner (e.g., "user:group")'),
+          permissions: z.string().optional().describe('Set file permissions (e.g., "644")'),
+          backup: z.boolean().optional().default(true).describe('Backup existing files'),
+          restart: z.string().optional().describe('Service to restart after deployment'),
+          sudoPassword: z
+            .string()
+            .optional()
+            .describe('Sudo password if needed (use with caution)'),
+        })
+        .optional()
+        .describe('Deployment options'),
+    },
   },
   async ({ server, files, options = {} }) => {
     try {
@@ -1931,7 +2000,7 @@ registerToolConditional(
       // Execute pre-deploy hook
       await executeHook('pre-deploy', {
         server: server,
-        files: files.map(f => f.local).join(', ')
+        files: files.map((f) => f.local).join(', '),
       });
 
       const deployments = [];
@@ -1946,7 +2015,7 @@ registerToolConditional(
         const deployOptions = {
           ...options,
           owner: options.owner || needs.suggestedOwner,
-          permissions: options.permissions || needs.suggestedPerms
+          permissions: options.permissions || needs.suggestedPerms,
         };
 
         const strategy = buildDeploymentStrategy(file.remote, deployOptions);
@@ -1961,7 +2030,12 @@ registerToolConditional(
         for (const step of strategy.steps) {
           const command = step.command.replace('{{tempFile}}', tempFile);
 
-          const result = await execCommandWithTimeout(ssh, command, { platform: deployServerConfig?.platform }, 15000);
+          const result = await execCommandWithTimeout(
+            ssh,
+            command,
+            { platform: deployServerConfig?.platform },
+            15000
+          );
 
           if (result.code !== 0 && step.type !== 'backup') {
             throw new Error(`${step.type} failed: ${result.stderr}`);
@@ -1976,14 +2050,14 @@ registerToolConditional(
           local: file.local,
           remote: file.remote,
           tempFile,
-          strategy
+          strategy,
         });
       }
 
       // Execute post-deploy hook
       await executeHook('post-deploy', {
         server: server,
-        files: files.map(f => f.remote).join(', ')
+        files: files.map((f) => f.remote).join(', '),
       });
 
       return {
@@ -2017,8 +2091,8 @@ registerToolConditional(
       command: z.string().describe('Command to execute with sudo'),
       password: z.string().optional().describe('Sudo password (will be masked in output)'),
       cwd: z.string().optional().describe('Working directory'),
-      timeout: z.number().optional().describe('Command timeout in milliseconds (default: 30000)')
-    }
+      timeout: z.number().optional().describe('Command timeout in milliseconds (default: 30000)'),
+    },
   },
   async ({ server, command, password, cwd, timeout = 30000 }) => {
     try {
@@ -2050,7 +2124,12 @@ registerToolConditional(
         fullCommand = `cd ${serverConfig.default_dir} && ${fullCommand}`;
       }
 
-      const result = await execCommandWithTimeout(ssh, fullCommand, { platform: serverConfig?.platform }, timeout);
+      const result = await execCommandWithTimeout(
+        ssh,
+        fullCommand,
+        { platform: serverConfig?.platform },
+        timeout
+      );
 
       // Mask password in output for security
       const maskedCommand = fullCommand.replace(/echo "[^"]+" \| sudo -S/, 'sudo');
@@ -2084,85 +2163,93 @@ registerToolConditional(
     inputSchema: {
       action: z.enum(['add', 'remove', 'list', 'suggest']).describe('Action to perform'),
       alias: z.string().optional().describe('Alias name (for add/remove)'),
-      command: z.string().optional().describe('Command to alias (for add) or search term (for suggest)')
-    }
+      command: z
+        .string()
+        .optional()
+        .describe('Command to alias (for add) or search term (for suggest)'),
+    },
   },
   async ({ action, alias, command }) => {
     try {
       switch (action) {
-      case 'add': {
-        if (!alias || !command) {
-          throw new Error('Both alias and command are required for add action');
+        case 'add': {
+          if (!alias || !command) {
+            throw new Error('Both alias and command are required for add action');
+          }
+
+          addCommandAlias(alias, command);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ Command alias created: ${alias} -> ${command}`,
+              },
+            ],
+          };
         }
 
-        addCommandAlias(alias, command);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Command alias created: ${alias} -> ${command}`,
-            },
-          ],
-        };
-      }
+        case 'remove': {
+          if (!alias) {
+            throw new Error('Alias is required for remove action');
+          }
 
-      case 'remove': {
-        if (!alias) {
-          throw new Error('Alias is required for remove action');
+          removeCommandAlias(alias);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ Command alias removed: ${alias}`,
+              },
+            ],
+          };
         }
 
-        removeCommandAlias(alias);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Command alias removed: ${alias}`,
-            },
-          ],
-        };
-      }
+        case 'list': {
+          const aliases = listCommandAliases();
 
-      case 'list': {
-        const aliases = listCommandAliases();
+          const aliasInfo = aliases
+            .map(
+              ({ alias, command, isFromProfile, isCustom }) =>
+                `  ${alias} -> ${command}${isFromProfile ? ' (profile)' : ''}${isCustom ? ' (custom)' : ''}`
+            )
+            .join('\n');
 
-        const aliasInfo = aliases.map(({ alias, command, isFromProfile, isCustom }) =>
-          `  ${alias} -> ${command}${isFromProfile ? ' (profile)' : ''}${isCustom ? ' (custom)' : ''}`
-        ).join('\n');
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: aliases.length > 0 ?
-                `📝 Command aliases:\n${aliasInfo}` :
-                '📝 No command aliases configured',
-            },
-          ],
-        };
-      }
-
-      case 'suggest': {
-        if (!command) {
-          throw new Error('Command search term is required for suggest action');
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  aliases.length > 0
+                    ? `📝 Command aliases:\n${aliasInfo}`
+                    : '📝 No command aliases configured',
+              },
+            ],
+          };
         }
 
-        const suggestions = suggestAliases(command);
+        case 'suggest': {
+          if (!command) {
+            throw new Error('Command search term is required for suggest action');
+          }
 
-        const suggestionInfo = suggestions.map(({ alias, command }) =>
-          `  ${alias} -> ${command}`
-        ).join('\n');
+          const suggestions = suggestAliases(command);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: suggestions.length > 0 ?
-                `💡 Suggested aliases for "${command}":\n${suggestionInfo}` :
-                `💡 No aliases found matching "${command}"`,
-            },
-          ],
-        };
-      }
+          const suggestionInfo = suggestions
+            .map(({ alias, command }) => `  ${alias} -> ${command}`)
+            .join('\n');
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  suggestions.length > 0
+                    ? `💡 Suggested aliases for "${command}":\n${suggestionInfo}`
+                    : `💡 No aliases found matching "${command}"`,
+              },
+            ],
+          };
+        }
       }
     } catch (error) {
       return {
@@ -2184,77 +2271,79 @@ registerToolConditional(
     description: 'Manage automation hooks for SSH operations',
     inputSchema: {
       action: z.enum(['list', 'enable', 'disable', 'status']).describe('Action to perform'),
-      hook: z.string().optional().describe('Hook name (for enable/disable)')
-    }
+      hook: z.string().optional().describe('Hook name (for enable/disable)'),
+    },
   },
   async ({ action, hook }) => {
     try {
       switch (action) {
-      case 'list': {
-        const hooks = listHooks();
+        case 'list': {
+          const hooks = listHooks();
 
-        const hooksInfo = hooks.map(({ name, enabled, description, actionCount }) =>
-          `  ${enabled ? '✅' : '⭕'} ${name}: ${description} (${actionCount} actions)`
-        ).join('\n');
+          const hooksInfo = hooks
+            .map(
+              ({ name, enabled, description, actionCount }) =>
+                `  ${enabled ? '✅' : '⭕'} ${name}: ${description} (${actionCount} actions)`
+            )
+            .join('\n');
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: hooks.length > 0 ?
-                `🎣 Available hooks:\n${hooksInfo}` :
-                '🎣 No hooks configured',
-            },
-          ],
-        };
-      }
-
-      case 'enable': {
-        if (!hook) {
-          throw new Error('Hook name is required for enable action');
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  hooks.length > 0 ? `🎣 Available hooks:\n${hooksInfo}` : '🎣 No hooks configured',
+              },
+            ],
+          };
         }
 
-        toggleHook(hook, true);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Hook enabled: ${hook}`,
-            },
-          ],
-        };
-      }
+        case 'enable': {
+          if (!hook) {
+            throw new Error('Hook name is required for enable action');
+          }
 
-      case 'disable': {
-        if (!hook) {
-          throw new Error('Hook name is required for disable action');
+          toggleHook(hook, true);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ Hook enabled: ${hook}`,
+              },
+            ],
+          };
         }
 
-        toggleHook(hook, false);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `⭕ Hook disabled: ${hook}`,
-            },
-          ],
-        };
-      }
+        case 'disable': {
+          if (!hook) {
+            throw new Error('Hook name is required for disable action');
+          }
 
-      case 'status': {
-        const hooks = listHooks();
-        const enabledHooks = hooks.filter(h => h.enabled);
-        const disabledHooks = hooks.filter(h => !h.enabled);
+          toggleHook(hook, false);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `⭕ Hook disabled: ${hook}`,
+              },
+            ],
+          };
+        }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `🎣 Hook status:\n  Enabled: ${enabledHooks.map(h => h.name).join(', ') || 'none'}\n  Disabled: ${disabledHooks.map(h => h.name).join(', ') || 'none'}`,
-            },
-          ],
-        };
-      }
+        case 'status': {
+          const hooks = listHooks();
+          const enabledHooks = hooks.filter((h) => h.enabled);
+          const disabledHooks = hooks.filter((h) => !h.enabled);
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `🎣 Hook status:\n  Enabled: ${enabledHooks.map((h) => h.name).join(', ') || 'none'}\n  Disabled: ${disabledHooks.map((h) => h.name).join(', ') || 'none'}`,
+              },
+            ],
+          };
+        }
       }
     } catch (error) {
       return {
@@ -2276,65 +2365,68 @@ registerToolConditional(
     description: 'Manage SSH Manager profiles for different project types',
     inputSchema: {
       action: z.enum(['list', 'switch', 'current']).describe('Action to perform'),
-      profile: z.string().optional().describe('Profile name (for switch)')
-    }
+      profile: z.string().optional().describe('Profile name (for switch)'),
+    },
   },
   async ({ action, profile }) => {
     try {
       switch (action) {
-      case 'list': {
-        const profiles = listProfiles();
+        case 'list': {
+          const profiles = listProfiles();
 
-        const profileInfo = profiles.map(p =>
-          `  ${p.name}: ${p.description} (${p.aliasCount} aliases, ${p.hookCount} hooks)`
-        ).join('\n');
+          const profileInfo = profiles
+            .map(
+              (p) => `  ${p.name}: ${p.description} (${p.aliasCount} aliases, ${p.hookCount} hooks)`
+            )
+            .join('\n');
 
-        const current = getActiveProfileName();
+          const current = getActiveProfileName();
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: profiles.length > 0 ?
-                `📚 Available profiles (current: ${current}):\n${profileInfo}` :
-                '📚 No profiles found',
-            },
-          ],
-        };
-      }
-
-      case 'switch': {
-        if (!profile) {
-          throw new Error('Profile name is required for switch action');
-        }
-
-        if (setActiveProfile(profile)) {
           return {
             content: [
               {
                 type: 'text',
-                text: `✅ Switched to profile: ${profile}\n⚠️  Restart Claude Code to apply profile changes`,
+                text:
+                  profiles.length > 0
+                    ? `📚 Available profiles (current: ${current}):\n${profileInfo}`
+                    : '📚 No profiles found',
               },
             ],
           };
-        } else {
-          throw new Error(`Failed to switch to profile: ${profile}`);
         }
-      }
 
-      case 'current': {
-        const current = getActiveProfileName();
-        const profile = loadProfile();
+        case 'switch': {
+          if (!profile) {
+            throw new Error('Profile name is required for switch action');
+          }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `📦 Current profile: ${current}\n📝 Description: ${profile.description || 'No description'}\n🔧 Aliases: ${Object.keys(profile.commandAliases || {}).length}\n🎣 Hooks: ${Object.keys(profile.hooks || {}).length}`,
-            },
-          ],
-        };
-      }
+          if (setActiveProfile(profile)) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `✅ Switched to profile: ${profile}\n⚠️  Restart Claude Code to apply profile changes`,
+                },
+              ],
+            };
+          } else {
+            throw new Error(`Failed to switch to profile: ${profile}`);
+          }
+        }
+
+        case 'current': {
+          const current = getActiveProfileName();
+          const profile = loadProfile();
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `📦 Current profile: ${current}\n📝 Description: ${profile.description || 'No description'}\n🔧 Aliases: ${Object.keys(profile.commandAliases || {}).length}\n🎣 Hooks: ${Object.keys(profile.hooks || {}).length}`,
+              },
+            ],
+          };
+        }
       }
     } catch (error) {
       return {
@@ -2355,103 +2447,110 @@ registerToolConditional(
   {
     description: 'Check status of SSH connections and manage connection pool',
     inputSchema: {
-      action: z.enum(['status', 'reconnect', 'disconnect', 'cleanup']).describe('Action to perform'),
-      server: z.string().optional().describe('Server name (for reconnect/disconnect)')
-    }
+      action: z
+        .enum(['status', 'reconnect', 'disconnect', 'cleanup'])
+        .describe('Action to perform'),
+      server: z.string().optional().describe('Server name (for reconnect/disconnect)'),
+    },
   },
   async ({ action, server }) => {
     try {
       switch (action) {
-      case 'status': {
-        const activeConnections = [];
-        const now = Date.now();
+        case 'status': {
+          const activeConnections = [];
+          const now = Date.now();
 
-        for (const [serverName, ssh] of connections.entries()) {
-          const timestamp = connectionTimestamps.get(serverName);
-          const ageMinutes = Math.floor((now - timestamp) / 1000 / 60);
-          const isValid = await isConnectionValid(ssh);
+          for (const [serverName, ssh] of connections.entries()) {
+            const timestamp = connectionTimestamps.get(serverName);
+            const ageMinutes = Math.floor((now - timestamp) / 1000 / 60);
+            const isValid = await isConnectionValid(ssh);
 
-          activeConnections.push({
-            server: serverName,
-            status: isValid ? '✅ Active' : '❌ Dead',
-            age: `${ageMinutes} minutes`,
-            keepalive: keepaliveIntervals.has(serverName) ? '✅' : '❌'
-          });
-        }
-
-        const statusInfo = activeConnections.length > 0 ?
-          activeConnections.map(c => `  ${c.server}: ${c.status} (age: ${c.age}, keepalive: ${c.keepalive})`).join('\n') :
-          '  No active connections';
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `🔌 Connection Pool Status:\n${statusInfo}\n\nSettings:\n  Timeout: ${CONNECTION_TIMEOUT / 1000 / 60} minutes\n  Keepalive: Every ${KEEPALIVE_INTERVAL / 1000 / 60} minutes`,
-            },
-          ],
-        };
-      }
-
-      case 'reconnect': {
-        if (!server) {
-          throw new Error('Server name is required for reconnect action');
-        }
-
-        const normalizedName = server.toLowerCase();
-        if (connections.has(normalizedName)) {
-          closeConnection(normalizedName);
-        }
-
-        await getConnection(server);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `♻️  Reconnected to ${server}`,
-            },
-          ],
-        };
-      }
-
-      case 'disconnect': {
-        if (!server) {
-          throw new Error('Server name is required for disconnect action');
-        }
-
-        closeConnection(server);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `🔌 Disconnected from ${server}`,
-            },
-          ],
-        };
-      }
-
-      case 'cleanup': {
-        const oldCount = connections.size;
-        cleanupOldConnections();
-
-        // Also check and remove dead connections
-        for (const [serverName, ssh] of connections.entries()) {
-          const isValid = await isConnectionValid(ssh);
-          if (!isValid) {
-            closeConnection(serverName);
+            activeConnections.push({
+              server: serverName,
+              status: isValid ? '✅ Active' : '❌ Dead',
+              age: `${ageMinutes} minutes`,
+              keepalive: keepaliveIntervals.has(serverName) ? '✅' : '❌',
+            });
           }
+
+          const statusInfo =
+            activeConnections.length > 0
+              ? activeConnections
+                  .map(
+                    (c) => `  ${c.server}: ${c.status} (age: ${c.age}, keepalive: ${c.keepalive})`
+                  )
+                  .join('\n')
+              : '  No active connections';
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `🔌 Connection Pool Status:\n${statusInfo}\n\nSettings:\n  Timeout: ${CONNECTION_TIMEOUT / 1000 / 60} minutes\n  Keepalive: Every ${KEEPALIVE_INTERVAL / 1000 / 60} minutes`,
+              },
+            ],
+          };
         }
 
-        const cleaned = oldCount - connections.size;
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `🧹 Cleanup complete: ${cleaned} connections closed, ${connections.size} active`,
-            },
-          ],
-        };
-      }
+        case 'reconnect': {
+          if (!server) {
+            throw new Error('Server name is required for reconnect action');
+          }
+
+          const normalizedName = server.toLowerCase();
+          if (connections.has(normalizedName)) {
+            closeConnection(normalizedName);
+          }
+
+          await getConnection(server);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `♻️  Reconnected to ${server}`,
+              },
+            ],
+          };
+        }
+
+        case 'disconnect': {
+          if (!server) {
+            throw new Error('Server name is required for disconnect action');
+          }
+
+          closeConnection(server);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `🔌 Disconnected from ${server}`,
+              },
+            ],
+          };
+        }
+
+        case 'cleanup': {
+          const oldCount = connections.size;
+          cleanupOldConnections();
+
+          // Also check and remove dead connections
+          for (const [serverName, ssh] of connections.entries()) {
+            const isValid = await isConnectionValid(ssh);
+            if (!isValid) {
+              closeConnection(serverName);
+            }
+          }
+
+          const cleaned = oldCount - connections.size;
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `🧹 Cleanup complete: ${cleaned} connections closed, ${connections.size} active`,
+              },
+            ],
+          };
+        }
       }
     } catch (error) {
       return {
@@ -2477,8 +2576,8 @@ registerToolConditional(
       localHost: z.string().optional().describe('Local host (default: 127.0.0.1)'),
       localPort: z.number().describe('Local port'),
       remoteHost: z.string().optional().describe('Remote host (not needed for dynamic)'),
-      remotePort: z.number().optional().describe('Remote port (not needed for dynamic)')
-    }
+      remotePort: z.number().optional().describe('Remote port (not needed for dynamic)'),
+    },
   },
   async ({ server, type, localHost, localPort, remoteHost, remotePort }) => {
     try {
@@ -2498,7 +2597,7 @@ registerToolConditional(
         localHost: localHost || '127.0.0.1',
         localPort,
         remoteHost,
-        remotePort
+        remotePort,
       };
 
       const tunnel = await createTunnel(resolvedName, ssh, config);
@@ -2524,16 +2623,16 @@ registerToolConditional(
         id: tunnel.id,
         server: resolvedName,
         type,
-        local: `${config.localHost}:${localPort}`
+        local: `${config.localHost}:${localPort}`,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Failed to create tunnel', { error: error.message });
@@ -2541,9 +2640,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: `❌ Tunnel creation failed: ${error.message}`
-          }
-        ]
+            text: `❌ Tunnel creation failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -2555,8 +2654,8 @@ registerToolConditional(
   {
     description: 'List active SSH tunnels',
     inputSchema: {
-      server: z.string().optional().describe('Filter by server name')
-    }
+      server: z.string().optional().describe('Filter by server name'),
+    },
   },
   async ({ server }) => {
     try {
@@ -2577,16 +2676,16 @@ registerToolConditional(
           content: [
             {
               type: 'text',
-              text: '📋 No active tunnels'
-            }
-          ]
+              text: '📋 No active tunnels',
+            },
+          ],
         };
       }
 
       let output = '📋 Active SSH Tunnels\n';
       output += '━'.repeat(60) + '\n\n';
 
-      tunnels.forEach(tunnel => {
+      tunnels.forEach((tunnel) => {
         output += `🔧 ${tunnel.id}\n`;
         output += `   Server: ${tunnel.server}\n`;
         output += `   Type: ${tunnel.type}\n`;
@@ -2613,9 +2712,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Failed to list tunnels', { error: error.message });
@@ -2623,9 +2722,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: `❌ Failed to list tunnels: ${error.message}`
-          }
-        ]
+            text: `❌ Failed to list tunnels: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -2638,8 +2737,8 @@ registerToolConditional(
     description: 'Close an SSH tunnel',
     inputSchema: {
       tunnelId: z.string().optional().describe('Tunnel ID to close'),
-      server: z.string().optional().describe('Close all tunnels for this server')
-    }
+      server: z.string().optional().describe('Close all tunnels for this server'),
+    },
   },
   async ({ tunnelId, server }) => {
     try {
@@ -2669,7 +2768,7 @@ registerToolConditional(
 
         logger.info('Server tunnels closed', {
           server: resolvedName,
-          count
+          count,
         });
       }
 
@@ -2677,9 +2776,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: output
-          }
-        ]
+            text: output,
+          },
+        ],
       };
     } catch (error) {
       logger.error('Failed to close tunnel', { error: error.message });
@@ -2687,9 +2786,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: `❌ Failed to close tunnel: ${error.message}`
-          }
-        ]
+            text: `❌ Failed to close tunnel: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -2703,8 +2802,11 @@ registerToolConditional(
     inputSchema: {
       action: z.enum(['verify', 'accept', 'remove', 'list', 'check']).describe('Action to perform'),
       server: z.string().optional().describe('Server name (required for most actions)'),
-      autoAccept: z.boolean().optional().describe('Automatically accept new keys (use with caution)')
-    }
+      autoAccept: z
+        .boolean()
+        .optional()
+        .describe('Automatically accept new keys (use with caution)'),
+    },
   },
   async ({ action, server, autoAccept = false }) => {
     try {
@@ -2723,207 +2825,208 @@ registerToolConditional(
       }
 
       switch (action) {
-      case 'verify': {
-        // Check if host key has changed
-        const verification = await hasHostKeyChanged(host, port);
+        case 'verify': {
+          // Check if host key has changed
+          const verification = await hasHostKeyChanged(host, port);
 
-        if (verification.changed) {
-          // Execute pre-connect-key-change hook
-          await executeHook('pre-connect-key-change', {
-            server: resolvedName,
-            host,
-            port,
-            currentFingerprints: verification.currentFingerprints,
-            newFingerprints: verification.newFingerprints
-          });
-
-          let output = `⚠️  SSH host key has changed for ${server} (${host}:${port})\n\n`;
-          output += 'Current fingerprints:\n';
-          verification.currentFingerprints.forEach(fp => {
-            output += `  ${fp}\n`;
-          });
-          output += '\nNew fingerprints:\n';
-          verification.newFingerprints.forEach(fp => {
-            output += `  ${fp}\n`;
-          });
-          output += '\n⚠️  This could indicate a security issue or server reinstallation.\n';
-          output += 'Use \'ssh_key_manage\' with action \'accept\' to update the key if you trust this change.';
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: output
-              }
-            ]
-          };
-        } else {
-          let output = `✅ SSH host key verified for ${server} (${host}:${port})\n`;
-          output += `Reason: ${verification.reason}\n`;
-
-          if (verification.reason === 'not_in_known_hosts') {
-            output += '\nℹ️  Host not in known_hosts. Use \'accept\' action to add it.';
-          }
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: output
-              }
-            ]
-          };
-        }
-      }
-
-      case 'accept': {
-        // Check if key exists
-        const isKnown = isHostKnown(host, port);
-
-        if (isKnown) {
-          // Update existing key
-          await updateHostKey(host, port);
-
-          // Execute post-key-update hook
-          await executeHook('post-key-update', {
-            server: resolvedName,
-            host,
-            port,
-            action: 'updated'
-          });
-
-          logger.info('SSH host key updated', { server: resolvedName, host, port });
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `✅ SSH host key updated for ${server} (${host}:${port})\nThe new key has been accepted and saved.`
-              }
-            ]
-          };
-        } else {
-          // Add new key
-          await addHostKey(host, port);
-
-          // Execute post-key-update hook
-          await executeHook('post-key-update', {
-            server: resolvedName,
-            host,
-            port,
-            action: 'added'
-          });
-
-          logger.info('SSH host key added', { server: resolvedName, host, port });
-
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `✅ SSH host key added for ${server} (${host}:${port})\nThe key has been saved to known_hosts.`
-              }
-            ]
-          };
-        }
-      }
-
-      case 'remove': {
-        removeHostKey(host, port);
-
-        logger.info('SSH host key removed', { server: resolvedName, host, port });
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ SSH host key removed for ${server} (${host}:${port})`
-            }
-          ]
-        };
-      }
-
-      case 'check': {
-        // Get current fingerprints
-        const currentKeys = getCurrentHostKey(host, port);
-        const newKeys = await getHostKeyFingerprint(host, port);
-
-        let output = `🔑 SSH Host Keys for ${server} (${host}:${port})\n`;
-        output += '━'.repeat(60) + '\n\n';
-
-        if (currentKeys && currentKeys.length > 0) {
-          output += '📋 Keys in known_hosts:\n';
-          currentKeys.forEach(key => {
-            output += `  ${key.type}: ${key.fingerprint}\n`;
-          });
-        } else {
-          output += '⚠️  No keys found in known_hosts\n';
-        }
-
-        output += '\n🌐 Keys from server:\n';
-        if (newKeys && newKeys.length > 0) {
-          newKeys.forEach(key => {
-            output += `  ${key.type}: ${key.fingerprint}\n`;
-          });
-        } else {
-          output += '  ❌ Could not fetch keys from server\n';
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: output
-            }
-          ]
-        };
-      }
-
-      case 'list': {
-        const knownHosts = listKnownHosts();
-
-        let output = '🔑 Known SSH Hosts\n';
-        output += '━'.repeat(60) + '\n\n';
-
-        if (knownHosts.length === 0) {
-          output += 'No hosts in known_hosts file\n';
-        } else {
-          // Map server names to known hosts
-          const serverMap = new Map();
-          for (const [name, config] of Object.entries(servers)) {
-            const key = `${config.host}:${config.port || 22}`;
-            serverMap.set(key, name);
-          }
-
-          knownHosts.forEach(entry => {
-            const serverName = serverMap.get(`${entry.host}:${entry.port}`);
-            output += `📍 ${entry.host}:${entry.port}`;
-            if (serverName) {
-              output += ` (${serverName})`;
-            }
-            output += '\n';
-
-            entry.keys.forEach(key => {
-              output += `   ${key.type}: ${key.fingerprint}\n`;
+          if (verification.changed) {
+            // Execute pre-connect-key-change hook
+            await executeHook('pre-connect-key-change', {
+              server: resolvedName,
+              host,
+              port,
+              currentFingerprints: verification.currentFingerprints,
+              newFingerprints: verification.newFingerprints,
             });
-            output += '\n';
-          });
+
+            let output = `⚠️  SSH host key has changed for ${server} (${host}:${port})\n\n`;
+            output += 'Current fingerprints:\n';
+            verification.currentFingerprints.forEach((fp) => {
+              output += `  ${fp}\n`;
+            });
+            output += '\nNew fingerprints:\n';
+            verification.newFingerprints.forEach((fp) => {
+              output += `  ${fp}\n`;
+            });
+            output += '\n⚠️  This could indicate a security issue or server reinstallation.\n';
+            output +=
+              "Use 'ssh_key_manage' with action 'accept' to update the key if you trust this change.";
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: output,
+                },
+              ],
+            };
+          } else {
+            let output = `✅ SSH host key verified for ${server} (${host}:${port})\n`;
+            output += `Reason: ${verification.reason}\n`;
+
+            if (verification.reason === 'not_in_known_hosts') {
+              output += "\nℹ️  Host not in known_hosts. Use 'accept' action to add it.";
+            }
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: output,
+                },
+              ],
+            };
+          }
         }
 
-        output += '━'.repeat(60) + '\n';
-        output += `Total: ${knownHosts.length} hosts`;
+        case 'accept': {
+          // Check if key exists
+          const isKnown = isHostKnown(host, port);
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: output
+          if (isKnown) {
+            // Update existing key
+            await updateHostKey(host, port);
+
+            // Execute post-key-update hook
+            await executeHook('post-key-update', {
+              server: resolvedName,
+              host,
+              port,
+              action: 'updated',
+            });
+
+            logger.info('SSH host key updated', { server: resolvedName, host, port });
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `✅ SSH host key updated for ${server} (${host}:${port})\nThe new key has been accepted and saved.`,
+                },
+              ],
+            };
+          } else {
+            // Add new key
+            await addHostKey(host, port);
+
+            // Execute post-key-update hook
+            await executeHook('post-key-update', {
+              server: resolvedName,
+              host,
+              port,
+              action: 'added',
+            });
+
+            logger.info('SSH host key added', { server: resolvedName, host, port });
+
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `✅ SSH host key added for ${server} (${host}:${port})\nThe key has been saved to known_hosts.`,
+                },
+              ],
+            };
+          }
+        }
+
+        case 'remove': {
+          removeHostKey(host, port);
+
+          logger.info('SSH host key removed', { server: resolvedName, host, port });
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ SSH host key removed for ${server} (${host}:${port})`,
+              },
+            ],
+          };
+        }
+
+        case 'check': {
+          // Get current fingerprints
+          const currentKeys = getCurrentHostKey(host, port);
+          const newKeys = await getHostKeyFingerprint(host, port);
+
+          let output = `🔑 SSH Host Keys for ${server} (${host}:${port})\n`;
+          output += '━'.repeat(60) + '\n\n';
+
+          if (currentKeys && currentKeys.length > 0) {
+            output += '📋 Keys in known_hosts:\n';
+            currentKeys.forEach((key) => {
+              output += `  ${key.type}: ${key.fingerprint}\n`;
+            });
+          } else {
+            output += '⚠️  No keys found in known_hosts\n';
+          }
+
+          output += '\n🌐 Keys from server:\n';
+          if (newKeys && newKeys.length > 0) {
+            newKeys.forEach((key) => {
+              output += `  ${key.type}: ${key.fingerprint}\n`;
+            });
+          } else {
+            output += '  ❌ Could not fetch keys from server\n';
+          }
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: output,
+              },
+            ],
+          };
+        }
+
+        case 'list': {
+          const knownHosts = listKnownHosts();
+
+          let output = '🔑 Known SSH Hosts\n';
+          output += '━'.repeat(60) + '\n\n';
+
+          if (knownHosts.length === 0) {
+            output += 'No hosts in known_hosts file\n';
+          } else {
+            // Map server names to known hosts
+            const serverMap = new Map();
+            for (const [name, config] of Object.entries(servers)) {
+              const key = `${config.host}:${config.port || 22}`;
+              serverMap.set(key, name);
             }
-          ]
-        };
-      }
 
-      default:
-        throw new Error(`Unknown action: ${action}`);
+            knownHosts.forEach((entry) => {
+              const serverName = serverMap.get(`${entry.host}:${entry.port}`);
+              output += `📍 ${entry.host}:${entry.port}`;
+              if (serverName) {
+                output += ` (${serverName})`;
+              }
+              output += '\n';
+
+              entry.keys.forEach((key) => {
+                output += `   ${key.type}: ${key.fingerprint}\n`;
+              });
+              output += '\n';
+            });
+          }
+
+          output += '━'.repeat(60) + '\n';
+          output += `Total: ${knownHosts.length} hosts`;
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: output,
+              },
+            ],
+          };
+        }
+
+        default:
+          throw new Error(`Unknown action: ${action}`);
       }
     } catch (error) {
       logger.error('SSH key management failed', { action, server, error: error.message });
@@ -2932,9 +3035,9 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: `❌ SSH key management error: ${error.message}`
-          }
-        ]
+            text: `❌ SSH key management error: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -2948,71 +3051,74 @@ registerToolConditional(
     inputSchema: {
       action: z.enum(['add', 'remove', 'list']).describe('Action to perform'),
       alias: z.string().optional().describe('Alias name (for add/remove)'),
-      server: z.string().optional().describe('Server name (for add)')
-    }
+      server: z.string().optional().describe('Server name (for add)'),
+    },
   },
   async ({ action, alias, server }) => {
     try {
       switch (action) {
-      case 'add': {
-        if (!alias || !server) {
-          throw new Error('Both alias and server are required for add action');
+        case 'add': {
+          if (!alias || !server) {
+            throw new Error('Both alias and server are required for add action');
+          }
+
+          const servers = loadServerConfig();
+          const resolvedName = resolveServerName(server, servers);
+
+          if (!resolvedName) {
+            throw new Error(`Server "${server}" not found`);
+          }
+
+          addAlias(alias, resolvedName);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ Alias created: ${alias} -> ${resolvedName}`,
+              },
+            ],
+          };
         }
 
-        const servers = loadServerConfig();
-        const resolvedName = resolveServerName(server, servers);
+        case 'remove': {
+          if (!alias) {
+            throw new Error('Alias is required for remove action');
+          }
 
-        if (!resolvedName) {
-          throw new Error(`Server "${server}" not found`);
+          removeAlias(alias);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✅ Alias removed: ${alias}`,
+              },
+            ],
+          };
         }
 
-        addAlias(alias, resolvedName);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Alias created: ${alias} -> ${resolvedName}`,
-            },
-          ],
-        };
-      }
+        case 'list': {
+          const aliases = listAliases();
+          const servers = loadServerConfig();
 
-      case 'remove': {
-        if (!alias) {
-          throw new Error('Alias is required for remove action');
+          const aliasInfo = aliases
+            .map(({ alias, target }) => {
+              const server = servers[target];
+              return `  ${alias} -> ${target} (${server?.host || 'unknown'})`;
+            })
+            .join('\n');
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  aliases.length > 0
+                    ? `📝 Server aliases:\n${aliasInfo}`
+                    : '📝 No aliases configured',
+              },
+            ],
+          };
         }
-
-        removeAlias(alias);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `✅ Alias removed: ${alias}`,
-            },
-          ],
-        };
-      }
-
-      case 'list': {
-        const aliases = listAliases();
-        const servers = loadServerConfig();
-
-        const aliasInfo = aliases.map(({ alias, target }) => {
-          const server = servers[target];
-          return `  ${alias} -> ${target} (${server?.host || 'unknown'})`;
-        }).join('\n');
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: aliases.length > 0 ?
-                `📝 Server aliases:\n${aliasInfo}` :
-                '📝 No aliases configured',
-            },
-          ],
-        };
-      }
       }
     } catch (error) {
       return {
@@ -3037,32 +3143,40 @@ registerToolConditional(
     description: 'Create backup of database or files on remote server',
     inputSchema: {
       server: z.string().describe('Server name'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb', 'files', 'full'])
+      type: z
+        .enum(['mysql', 'postgresql', 'mongodb', 'files', 'full'])
         .describe('Backup type: mysql, postgresql, mongodb, files, or full'),
       name: z.string().describe('Backup name (e.g., production, app-data)'),
-      database: z.string().optional()
-        .describe('Database name (required for db types)'),
-      dbUser: z.string().optional()
-        .describe('Database user'),
-      dbPassword: z.string().optional()
-        .describe('Database password'),
-      dbHost: z.string().optional()
-        .describe('Database host (default: localhost)'),
-      dbPort: z.number().optional()
-        .describe('Database port'),
-      paths: z.array(z.string()).optional()
-        .describe('Paths to backup (for files type)'),
-      exclude: z.array(z.string()).optional()
-        .describe('Patterns to exclude from backup'),
-      backupDir: z.string().optional()
+      database: z.string().optional().describe('Database name (required for db types)'),
+      dbUser: z.string().optional().describe('Database user'),
+      dbPassword: z.string().optional().describe('Database password'),
+      dbHost: z.string().optional().describe('Database host (default: localhost)'),
+      dbPort: z.number().optional().describe('Database port'),
+      paths: z.array(z.string()).optional().describe('Paths to backup (for files type)'),
+      exclude: z.array(z.string()).optional().describe('Patterns to exclude from backup'),
+      backupDir: z
+        .string()
+        .optional()
         .describe(`Backup directory (default: ${DEFAULT_BACKUP_DIR})`),
-      retention: z.number().optional()
-        .describe('Retention period in days (default: 7)'),
-      compress: z.boolean().optional()
-        .describe('Compress backup (default: true)')
-    }
+      retention: z.number().optional().describe('Retention period in days (default: 7)'),
+      compress: z.boolean().optional().describe('Compress backup (default: true)'),
+    },
   },
-  async ({ server: serverName, type, name, database, dbUser, dbPassword, dbHost, dbPort, paths, exclude, backupDir, retention = 7, compress = true }) => {
+  async ({
+    server: serverName,
+    type,
+    name,
+    database,
+    dbUser,
+    dbPassword,
+    dbHost,
+    dbPort,
+    paths,
+    exclude,
+    backupDir,
+    retention = 7,
+    compress = true,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
 
@@ -3071,7 +3185,7 @@ registerToolConditional(
         server: serverName,
         type,
         database,
-        paths
+        paths,
       });
 
       const backupDirectory = backupDir || DEFAULT_BACKUP_DIR;
@@ -3082,85 +3196,89 @@ registerToolConditional(
       // Ensure backup directory exists with proper error handling
       const mkdirResult = await ssh.execCommand(`mkdir -p "${backupDirectory}"`);
       if (mkdirResult.code !== 0) {
-        throw new Error(`Failed to create backup directory: ${mkdirResult.stderr || mkdirResult.stdout}`);
+        throw new Error(
+          `Failed to create backup directory: ${mkdirResult.stderr || mkdirResult.stdout}`
+        );
       }
 
       logger.info(`Creating backup: ${backupId}`, {
         server: serverName,
         type,
         name,
-        database
+        database,
       });
 
       // Build backup command based on type
       let backupCommand;
 
       switch (type) {
-      case BACKUP_TYPES.MYSQL:
-        if (!database) {
-          throw new Error('database parameter required for MySQL backup');
+        case BACKUP_TYPES.MYSQL:
+          if (!database) {
+            throw new Error('database parameter required for MySQL backup');
+          }
+          backupCommand = buildMySQLDumpCommand({
+            database,
+            user: dbUser,
+            password: dbPassword,
+            host: dbHost,
+            port: dbPort,
+            outputFile: backupFile,
+            compress,
+          });
+          break;
+
+        case BACKUP_TYPES.POSTGRESQL:
+          if (!database) {
+            throw new Error('database parameter required for PostgreSQL backup');
+          }
+          backupCommand = buildPostgreSQLDumpCommand({
+            database,
+            user: dbUser,
+            password: dbPassword,
+            host: dbHost,
+            port: dbPort,
+            outputFile: backupFile,
+            compress,
+          });
+          break;
+
+        case BACKUP_TYPES.MONGODB: {
+          if (!database) {
+            throw new Error('database parameter required for MongoDB backup');
+          }
+          const mongoOutputDir = backupFile.replace('.gz', '');
+          backupCommand = buildMongoDBDumpCommand({
+            database,
+            user: dbUser,
+            password: dbPassword,
+            host: dbHost,
+            port: dbPort,
+            outputDir: mongoOutputDir,
+            compress,
+          });
+          break;
         }
-        backupCommand = buildMySQLDumpCommand({
-          database,
-          user: dbUser,
-          password: dbPassword,
-          host: dbHost,
-          port: dbPort,
-          outputFile: backupFile,
-          compress
-        });
-        break;
 
-      case BACKUP_TYPES.POSTGRESQL:
-        if (!database) {
-          throw new Error('database parameter required for PostgreSQL backup');
-        }
-        backupCommand = buildPostgreSQLDumpCommand({
-          database,
-          user: dbUser,
-          password: dbPassword,
-          host: dbHost,
-          port: dbPort,
-          outputFile: backupFile,
-          compress
-        });
-        break;
+        case BACKUP_TYPES.FILES:
+          if (!paths || paths.length === 0) {
+            throw new Error('paths parameter required for files backup');
+          }
+          backupCommand = buildFilesBackupCommand({
+            paths,
+            outputFile: backupFile,
+            exclude: exclude || [],
+            compress,
+          });
+          break;
 
-      case BACKUP_TYPES.MONGODB: {
-        if (!database) {
-          throw new Error('database parameter required for MongoDB backup');
-        }
-        const mongoOutputDir = backupFile.replace('.gz', '');
-        backupCommand = buildMongoDBDumpCommand({
-          database,
-          user: dbUser,
-          password: dbPassword,
-          host: dbHost,
-          port: dbPort,
-          outputDir: mongoOutputDir,
-          compress
-        });
-        break;
-      }
+        case BACKUP_TYPES.FULL:
+          // Full backup combines database and files
+          throw new Error(
+            'Full backup not yet implemented. Use separate mysql/postgresql/files backups.'
+          );
 
-      case BACKUP_TYPES.FILES:
-        if (!paths || paths.length === 0) {
-          throw new Error('paths parameter required for files backup');
-        }
-        backupCommand = buildFilesBackupCommand({
-          paths,
-          outputFile: backupFile,
-          exclude: exclude || [],
-          compress
-        });
-        break;
-
-      case BACKUP_TYPES.FULL:
-        // Full backup combines database and files
-        throw new Error('Full backup not yet implemented. Use separate mysql/postgresql/files backups.');
-
-      default:
-        throw new Error(`Unknown backup type: ${type}`);
+        default:
+          throw new Error(`Unknown backup type: ${type}`);
       }
 
       // Execute backup command
@@ -3171,7 +3289,9 @@ registerToolConditional(
       }
 
       // Get backup file size
-      const sizeResult = await ssh.execCommand(`stat -f%z "${backupFile}" 2>/dev/null || stat -c%s "${backupFile}" 2>/dev/null`);
+      const sizeResult = await ssh.execCommand(
+        `stat -f%z "${backupFile}" 2>/dev/null || stat -c%s "${backupFile}" 2>/dev/null`
+      );
       const size = parseInt(sizeResult.stdout.trim()) || 0;
 
       // Create and save metadata
@@ -3180,7 +3300,7 @@ registerToolConditional(
         database,
         paths,
         compress,
-        retention
+        retention,
       });
       metadata.size = size;
       metadata.status = 'completed';
@@ -3198,54 +3318,57 @@ registerToolConditional(
         backupId,
         type,
         size,
-        success: true
+        success: true,
       });
 
       logger.info(`Backup created successfully: ${backupId}`, {
         size,
-        location: backupFile
+        location: backupFile,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              backup_id: backupId,
-              type,
-              size,
-              size_human: `${(size / 1024 / 1024).toFixed(2)} MB`,
-              location: backupFile,
-              metadata_path: metadataPath,
-              created_at: metadata.created_at,
-              retention_days: retention
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                backup_id: backupId,
+                type,
+                size,
+                size_human: `${(size / 1024 / 1024).toFixed(2)} MB`,
+                location: backupFile,
+                metadata_path: metadataPath,
+                created_at: metadata.created_at,
+                retention_days: retention,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Backup creation failed', {
         server: serverName,
         type,
-        error: error.message
+        error: error.message,
       });
 
       await executeHook('post-backup', {
         server: serverName,
         type,
         success: false,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Backup failed: ${error.message}`
-          }
-        ]
+            text: `❌ Backup failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3257,11 +3380,15 @@ registerToolConditional(
     description: 'List available backups on remote server',
     inputSchema: {
       server: z.string().describe('Server name'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb', 'files', 'full']).optional()
+      type: z
+        .enum(['mysql', 'postgresql', 'mongodb', 'files', 'full'])
+        .optional()
         .describe('Filter by backup type'),
-      backupDir: z.string().optional()
-        .describe(`Backup directory (default: ${DEFAULT_BACKUP_DIR})`)
-    }
+      backupDir: z
+        .string()
+        .optional()
+        .describe(`Backup directory (default: ${DEFAULT_BACKUP_DIR})`),
+    },
   },
   async ({ server: serverName, type, backupDir }) => {
     try {
@@ -3285,39 +3412,42 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              count: backups.length,
-              backups: backups.map(b => ({
-                id: b.id,
-                type: b.type,
-                created_at: b.created_at,
-                database: b.database,
-                paths: b.paths,
-                size: b.size,
-                size_human: b.size ? `${(b.size / 1024 / 1024).toFixed(2)} MB` : 'unknown',
-                compressed: b.compressed,
-                retention_days: b.retention,
-                status: b.status
-              }))
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                count: backups.length,
+                backups: backups.map((b) => ({
+                  id: b.id,
+                  type: b.type,
+                  created_at: b.created_at,
+                  database: b.database,
+                  paths: b.paths,
+                  size: b.size,
+                  size_human: b.size ? `${(b.size / 1024 / 1024).toFixed(2)} MB` : 'unknown',
+                  compressed: b.compressed,
+                  retention_days: b.retention,
+                  status: b.status,
+                })),
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Failed to list backups', {
         server: serverName,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Failed to list backups: ${error.message}`
-          }
-        ]
+            text: `❌ Failed to list backups: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3330,23 +3460,29 @@ registerToolConditional(
     inputSchema: {
       server: z.string().describe('Server name'),
       backupId: z.string().describe('Backup ID to restore'),
-      database: z.string().optional()
-        .describe('Target database name (for db restores)'),
-      dbUser: z.string().optional()
-        .describe('Database user'),
-      dbPassword: z.string().optional()
-        .describe('Database password'),
-      dbHost: z.string().optional()
-        .describe('Database host (default: localhost)'),
-      dbPort: z.number().optional()
-        .describe('Database port'),
-      targetPath: z.string().optional()
-        .describe('Target path for files restore (default: /)'),
-      backupDir: z.string().optional()
-        .describe(`Backup directory (default: ${DEFAULT_BACKUP_DIR})`)
-    }
+      database: z.string().optional().describe('Target database name (for db restores)'),
+      dbUser: z.string().optional().describe('Database user'),
+      dbPassword: z.string().optional().describe('Database password'),
+      dbHost: z.string().optional().describe('Database host (default: localhost)'),
+      dbPort: z.number().optional().describe('Database port'),
+      targetPath: z.string().optional().describe('Target path for files restore (default: /)'),
+      backupDir: z
+        .string()
+        .optional()
+        .describe(`Backup directory (default: ${DEFAULT_BACKUP_DIR})`),
+    },
   },
-  async ({ server: serverName, backupId, database, dbUser, dbPassword, dbHost, dbPort, targetPath, backupDir }) => {
+  async ({
+    server: serverName,
+    backupId,
+    database,
+    dbUser,
+    dbPassword,
+    dbHost,
+    dbPort,
+    targetPath,
+    backupDir,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
       const backupDirectory = backupDir || DEFAULT_BACKUP_DIR;
@@ -3366,12 +3502,12 @@ registerToolConditional(
         server: serverName,
         backupId,
         type: metadata.type,
-        database
+        database,
       });
 
       logger.info(`Restoring backup: ${backupId}`, {
         server: serverName,
-        type: metadata.type
+        type: metadata.type,
       });
 
       // Build restore command
@@ -3381,7 +3517,7 @@ registerToolConditional(
         password: dbPassword,
         host: dbHost,
         port: dbPort,
-        targetPath
+        targetPath,
       });
 
       // Execute restore
@@ -3396,7 +3532,7 @@ registerToolConditional(
         server: serverName,
         backupId,
         type: metadata.type,
-        success: true
+        success: true,
       });
 
       logger.info(`Backup restored successfully: ${backupId}`);
@@ -3405,40 +3541,43 @@ registerToolConditional(
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              backup_id: backupId,
-              type: metadata.type,
-              restored_at: new Date().toISOString(),
-              original_created: metadata.created_at,
-              database: database || metadata.database,
-              paths: metadata.paths
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                backup_id: backupId,
+                type: metadata.type,
+                restored_at: new Date().toISOString(),
+                original_created: metadata.created_at,
+                database: database || metadata.database,
+                paths: metadata.paths,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Restore failed', {
         server: serverName,
         backupId,
-        error: error.message
+        error: error.message,
       });
 
       await executeHook('post-restore', {
         server: serverName,
         backupId,
         success: false,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Restore failed: ${error.message}`
-          }
-        ]
+            text: `❌ Restore failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3451,16 +3590,12 @@ registerToolConditional(
     inputSchema: {
       server: z.string().describe('Server name'),
       schedule: z.string().describe('Cron schedule (e.g., "0 2 * * *" for daily at 2 AM)'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb', 'files'])
-        .describe('Backup type'),
+      type: z.enum(['mysql', 'postgresql', 'mongodb', 'files']).describe('Backup type'),
       name: z.string().describe('Backup name'),
-      database: z.string().optional()
-        .describe('Database name (for db types)'),
-      paths: z.array(z.string()).optional()
-        .describe('Paths to backup (for files type)'),
-      retention: z.number().optional()
-        .describe('Retention period in days (default: 7)')
-    }
+      database: z.string().optional().describe('Database name (for db types)'),
+      paths: z.array(z.string()).optional().describe('Paths to backup (for files type)'),
+      retention: z.number().optional().describe('Retention period in days (default: 7)'),
+    },
   },
   async ({ server: serverName, schedule, type, name, database, paths, retention = 7 }) => {
     try {
@@ -3487,18 +3622,18 @@ registerToolConditional(
 
       // Add backup command based on type
       switch (type) {
-      case BACKUP_TYPES.MYSQL:
-        scriptContent += `mysqldump --single-transaction --routines --triggers ${database} | gzip > "$BACKUP_FILE"\n`;
-        break;
-      case BACKUP_TYPES.POSTGRESQL:
-        scriptContent += `pg_dump --format=custom --clean --if-exists ${database} | gzip > "$BACKUP_FILE"\n`;
-        break;
-      case BACKUP_TYPES.MONGODB:
-        scriptContent += `mongodump --db ${database} --out /tmp/mongo_\${RANDOM} && tar -czf "$BACKUP_FILE" -C /tmp mongo_*\n`;
-        break;
-      case BACKUP_TYPES.FILES:
-        scriptContent += `tar -czf "$BACKUP_FILE" ${paths.join(' ')}\n`;
-        break;
+        case BACKUP_TYPES.MYSQL:
+          scriptContent += `mysqldump --single-transaction --routines --triggers ${database} | gzip > "$BACKUP_FILE"\n`;
+          break;
+        case BACKUP_TYPES.POSTGRESQL:
+          scriptContent += `pg_dump --format=custom --clean --if-exists ${database} | gzip > "$BACKUP_FILE"\n`;
+          break;
+        case BACKUP_TYPES.MONGODB:
+          scriptContent += `mongodump --db ${database} --out /tmp/mongo_\${RANDOM} && tar -czf "$BACKUP_FILE" -C /tmp mongo_*\n`;
+          break;
+        case BACKUP_TYPES.FILES:
+          scriptContent += `tar -czf "$BACKUP_FILE" ${paths.join(' ')}\n`;
+          break;
       }
 
       // Add cleanup command
@@ -3506,8 +3641,10 @@ registerToolConditional(
       scriptContent += `find "$BACKUP_DIR" -name "*_${name}_*" -type f -mtime +${retention} -delete\n`;
 
       // Save script to remote server
-      const escapedScript = scriptContent.replace(/'/g, '\'\\\'\'');
-      await ssh.execCommand(`echo '${escapedScript}' > "${scriptPath}" && chmod +x "${scriptPath}"`);
+      const escapedScript = scriptContent.replace(/'/g, "'\\''");
+      await ssh.execCommand(
+        `echo '${escapedScript}' > "${scriptPath}" && chmod +x "${scriptPath}"`
+      );
 
       // Add to crontab
       const cronComment = `ssh-manager-backup-${name}`;
@@ -3522,42 +3659,45 @@ registerToolConditional(
         server: serverName,
         schedule,
         type,
-        retention
+        retention,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              name,
-              schedule,
-              type,
-              database,
-              paths,
-              retention_days: retention,
-              script_path: scriptPath,
-              next_run: 'Use crontab -l to see next run time'
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                name,
+                schedule,
+                type,
+                database,
+                paths,
+                retention_days: retention,
+                script_path: scriptPath,
+                next_run: 'Use crontab -l to see next run time',
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Failed to schedule backup', {
         server: serverName,
         name,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Failed to schedule backup: ${error.message}`
-          }
-        ]
+            text: `❌ Failed to schedule backup: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3573,9 +3713,8 @@ registerToolConditional(
     description: 'Perform comprehensive health check on remote server',
     inputSchema: {
       server: z.string().describe('Server name'),
-      detailed: z.boolean().optional()
-        .describe('Include detailed metrics (network, load average)')
-    }
+      detailed: z.boolean().optional().describe('Include detailed metrics (network, load average)'),
+    },
   },
   async ({ server: serverName, detailed = false }) => {
     try {
@@ -3602,7 +3741,7 @@ registerToolConditional(
         cpu: health.cpu,
         memory: health.memory,
         disks: health.disks,
-        uptime: health.uptime
+        uptime: health.uptime,
       };
 
       if (detailed) {
@@ -3632,31 +3771,30 @@ registerToolConditional(
 
       logger.info(`Health check completed: ${health.overall_status}`, {
         server: serverName,
-        status: health.overall_status
+        status: health.overall_status,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2)
-          }
-        ]
+            text: JSON.stringify(response, null, 2),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Health check failed', {
         server: serverName,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Health check failed: ${error.message}`
-          }
-        ]
+            text: `❌ Health check failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3668,16 +3806,15 @@ registerToolConditional(
     description: 'Check status of services on remote server',
     inputSchema: {
       server: z.string().describe('Server name'),
-      services: z.array(z.string())
-        .describe('Service names to check (e.g., nginx, mysql, docker)')
-    }
+      services: z.array(z.string()).describe('Service names to check (e.g., nginx, mysql, docker)'),
+    },
   },
   async ({ server: serverName, services }) => {
     try {
       const ssh = await getConnection(serverName);
 
       logger.info(`Checking service status on ${serverName}`, {
-        services: services.join(', ')
+        services: services.join(', '),
       });
 
       const serviceStatuses = [];
@@ -3693,8 +3830,8 @@ registerToolConditional(
       }
 
       // Count running vs stopped
-      const running = serviceStatuses.filter(s => s.status === 'running').length;
-      const stopped = serviceStatuses.filter(s => s.status === 'stopped').length;
+      const running = serviceStatuses.filter((s) => s.status === 'running').length;
+      const stopped = serviceStatuses.filter((s) => s.status === 'stopped').length;
 
       const response = {
         server: serverName,
@@ -3703,39 +3840,41 @@ registerToolConditional(
         running,
         stopped,
         services: serviceStatuses,
-        overall_health: stopped === 0 ? HEALTH_STATUS.HEALTHY :
-          running > stopped ? HEALTH_STATUS.WARNING :
-            HEALTH_STATUS.CRITICAL
+        overall_health:
+          stopped === 0
+            ? HEALTH_STATUS.HEALTHY
+            : running > stopped
+              ? HEALTH_STATUS.WARNING
+              : HEALTH_STATUS.CRITICAL,
       };
 
       logger.info('Service check completed', {
         server: serverName,
         running,
-        stopped
+        stopped,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2)
-          }
-        ]
+            text: JSON.stringify(response, null, 2),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Service status check failed', {
         server: serverName,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Service status check failed: ${error.message}`
-          }
-        ]
+            text: `❌ Service status check failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3747,144 +3886,153 @@ registerToolConditional(
     description: 'List, monitor, or kill processes on remote server',
     inputSchema: {
       server: z.string().describe('Server name'),
-      action: z.enum(['list', 'kill', 'info'])
+      action: z
+        .enum(['list', 'kill', 'info'])
         .describe('Action: list processes, kill process, or get process info'),
-      pid: z.number().optional()
-        .describe('Process ID (required for kill and info actions)'),
-      signal: z.enum(['TERM', 'KILL', 'HUP', 'INT', 'QUIT']).optional()
+      pid: z.number().optional().describe('Process ID (required for kill and info actions)'),
+      signal: z
+        .enum(['TERM', 'KILL', 'HUP', 'INT', 'QUIT'])
+        .optional()
         .describe('Signal to send when killing (default: TERM)'),
-      sortBy: z.enum(['cpu', 'memory']).optional()
+      sortBy: z
+        .enum(['cpu', 'memory'])
+        .optional()
         .describe('Sort processes by CPU or memory (default: cpu)'),
-      limit: z.number().optional()
-        .describe('Number of processes to return (default: 20)'),
-      filter: z.string().optional()
-        .describe('Filter processes by name/command')
-    }
+      limit: z.number().optional().describe('Number of processes to return (default: 20)'),
+      filter: z.string().optional().describe('Filter processes by name/command'),
+    },
   },
-  async ({ server: serverName, action, pid, signal = 'TERM', sortBy = 'cpu', limit = 20, filter }) => {
+  async ({
+    server: serverName,
+    action,
+    pid,
+    signal = 'TERM',
+    sortBy = 'cpu',
+    limit = 20,
+    filter,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
 
       logger.info(`Process manager action: ${action}`, {
         server: serverName,
         pid,
-        filter
+        filter,
       });
 
       let response;
 
       switch (action) {
-      case 'list': {
-        const listCommand = buildProcessListCommand({ sortBy, limit, filter });
-        const result = await ssh.execCommand(listCommand);
+        case 'list': {
+          const listCommand = buildProcessListCommand({ sortBy, limit, filter });
+          const result = await ssh.execCommand(listCommand);
 
-        if (result.code !== 0) {
-          throw new Error(`Failed to list processes: ${result.stderr}`);
-        }
-
-        const processes = parseProcessList(result.stdout);
-
-        response = {
-          server: serverName,
-          action: 'list',
-          count: processes.length,
-          sorted_by: sortBy,
-          processes
-        };
-        break;
-      }
-
-      case 'kill': {
-        if (!pid) {
-          throw new Error('pid parameter required for kill action');
-        }
-
-        // Get process info first
-        const infoCommand = buildProcessInfoCommand(pid);
-        const infoResult = await ssh.execCommand(infoCommand);
-
-        let processInfo = {};
-        if (infoResult.code === 0 && infoResult.stdout) {
-          try {
-            processInfo = JSON.parse(infoResult.stdout);
-          } catch (e) {
-            // Process might not exist
+          if (result.code !== 0) {
+            throw new Error(`Failed to list processes: ${result.stderr}`);
           }
+
+          const processes = parseProcessList(result.stdout);
+
+          response = {
+            server: serverName,
+            action: 'list',
+            count: processes.length,
+            sorted_by: sortBy,
+            processes,
+          };
+          break;
         }
 
-        // Kill the process
-        const killCommand = buildKillProcessCommand(pid, signal);
-        const killResult = await ssh.execCommand(killCommand);
+        case 'kill': {
+          if (!pid) {
+            throw new Error('pid parameter required for kill action');
+          }
 
-        if (killResult.code !== 0) {
-          throw new Error(`Failed to kill process ${pid}: ${killResult.stderr}`);
+          // Get process info first
+          const infoCommand = buildProcessInfoCommand(pid);
+          const infoResult = await ssh.execCommand(infoCommand);
+
+          let processInfo = {};
+          if (infoResult.code === 0 && infoResult.stdout) {
+            try {
+              processInfo = JSON.parse(infoResult.stdout);
+            } catch (e) {
+              // Process might not exist
+            }
+          }
+
+          // Kill the process
+          const killCommand = buildKillProcessCommand(pid, signal);
+          const killResult = await ssh.execCommand(killCommand);
+
+          if (killResult.code !== 0) {
+            throw new Error(`Failed to kill process ${pid}: ${killResult.stderr}`);
+          }
+
+          response = {
+            server: serverName,
+            action: 'kill',
+            pid,
+            signal,
+            process: processInfo,
+            success: true,
+          };
+
+          logger.info(`Process killed: ${pid}`, {
+            server: serverName,
+            signal,
+          });
+          break;
         }
 
-        response = {
-          server: serverName,
-          action: 'kill',
-          pid,
-          signal,
-          process: processInfo,
-          success: true
-        };
+        case 'info': {
+          if (!pid) {
+            throw new Error('pid parameter required for info action');
+          }
 
-        logger.info(`Process killed: ${pid}`, {
-          server: serverName,
-          signal
-        });
-        break;
-      }
+          const infoCommand = buildProcessInfoCommand(pid);
+          const result = await ssh.execCommand(infoCommand);
 
-      case 'info': {
-        if (!pid) {
-          throw new Error('pid parameter required for info action');
+          if (result.code !== 0 || !result.stdout) {
+            throw new Error(`Process ${pid} not found`);
+          }
+
+          const processInfo = JSON.parse(result.stdout);
+
+          response = {
+            server: serverName,
+            action: 'info',
+            process: processInfo,
+          };
+          break;
         }
 
-        const infoCommand = buildProcessInfoCommand(pid);
-        const result = await ssh.execCommand(infoCommand);
-
-        if (result.code !== 0 || !result.stdout) {
-          throw new Error(`Process ${pid} not found`);
-        }
-
-        const processInfo = JSON.parse(result.stdout);
-
-        response = {
-          server: serverName,
-          action: 'info',
-          process: processInfo
-        };
-        break;
-      }
-
-      default:
-        throw new Error(`Unknown action: ${action}`);
+        default:
+          throw new Error(`Unknown action: ${action}`);
       }
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2)
-          }
-        ]
+            text: JSON.stringify(response, null, 2),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Process manager failed', {
         server: serverName,
         action,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Process manager failed: ${error.message}`
-          }
-        ]
+            text: `❌ Process manager failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -3896,175 +4044,183 @@ registerToolConditional(
     description: 'Configure health monitoring alerts and thresholds',
     inputSchema: {
       server: z.string().describe('Server name'),
-      action: z.enum(['set', 'get', 'check'])
-        .describe('Action: set thresholds, get config, or check current metrics against thresholds'),
-      cpuThreshold: z.number().optional()
-        .describe('CPU usage threshold percentage (e.g., 80)'),
-      memoryThreshold: z.number().optional()
+      action: z
+        .enum(['set', 'get', 'check'])
+        .describe(
+          'Action: set thresholds, get config, or check current metrics against thresholds'
+        ),
+      cpuThreshold: z.number().optional().describe('CPU usage threshold percentage (e.g., 80)'),
+      memoryThreshold: z
+        .number()
+        .optional()
         .describe('Memory usage threshold percentage (e.g., 90)'),
-      diskThreshold: z.number().optional()
-        .describe('Disk usage threshold percentage (e.g., 85)'),
-      enabled: z.boolean().optional()
-        .describe('Enable or disable alerts (default: true)')
-    }
+      diskThreshold: z.number().optional().describe('Disk usage threshold percentage (e.g., 85)'),
+      enabled: z.boolean().optional().describe('Enable or disable alerts (default: true)'),
+    },
   },
-  async ({ server: serverName, action, cpuThreshold, memoryThreshold, diskThreshold, enabled = true }) => {
+  async ({
+    server: serverName,
+    action,
+    cpuThreshold,
+    memoryThreshold,
+    diskThreshold,
+    enabled = true,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
       const configPath = '/etc/ssh-manager-alerts.json';
 
       logger.info(`Alert setup action: ${action}`, {
-        server: serverName
+        server: serverName,
       });
 
       let response;
 
       switch (action) {
-      case 'set': {
-        // Create alert configuration
-        const config = createAlertConfig({
-          cpu: cpuThreshold,
-          memory: memoryThreshold,
-          disk: diskThreshold,
-          enabled
-        });
+        case 'set': {
+          // Create alert configuration
+          const config = createAlertConfig({
+            cpu: cpuThreshold,
+            memory: memoryThreshold,
+            disk: diskThreshold,
+            enabled,
+          });
 
-        // Save to server
-        const saveCommand = buildSaveAlertConfigCommand(config, configPath);
-        const saveResult = await ssh.execCommand(saveCommand);
+          // Save to server
+          const saveCommand = buildSaveAlertConfigCommand(config, configPath);
+          const saveResult = await ssh.execCommand(saveCommand);
 
-        if (saveResult.code !== 0) {
-          throw new Error(`Failed to save alert config: ${saveResult.stderr}`);
-        }
-
-        response = {
-          server: serverName,
-          action: 'set',
-          config,
-          config_path: configPath,
-          success: true
-        };
-
-        logger.info('Alert thresholds configured', {
-          server: serverName,
-          thresholds: config
-        });
-        break;
-      }
-
-      case 'get': {
-        // Load configuration
-        const loadCommand = buildLoadAlertConfigCommand(configPath);
-        const result = await ssh.execCommand(loadCommand);
-
-        let config = {};
-        if (result.stdout && result.stdout.trim()) {
-          try {
-            config = JSON.parse(result.stdout);
-          } catch (e) {
-            config = { error: 'Failed to parse config' };
+          if (saveResult.code !== 0) {
+            throw new Error(`Failed to save alert config: ${saveResult.stderr}`);
           }
-        }
 
-        response = {
-          server: serverName,
-          action: 'get',
-          config,
-          config_path: configPath
-        };
-        break;
-      }
-
-      case 'check': {
-        // Load thresholds
-        const loadCommand = buildLoadAlertConfigCommand(configPath);
-        const loadResult = await ssh.execCommand(loadCommand);
-
-        let thresholds = {};
-        if (loadResult.stdout && loadResult.stdout.trim()) {
-          try {
-            thresholds = JSON.parse(loadResult.stdout);
-          } catch (e) {
-            throw new Error('No alert configuration found. Use action=set to configure.');
-          }
-        } else {
-          throw new Error('No alert configuration found. Use action=set to configure.');
-        }
-
-        if (!thresholds.enabled) {
           response = {
             server: serverName,
-            action: 'check',
-            message: 'Alerts are disabled',
-            thresholds
+            action: 'set',
+            config,
+            config_path: configPath,
+            success: true,
+          };
+
+          logger.info('Alert thresholds configured', {
+            server: serverName,
+            thresholds: config,
+          });
+          break;
+        }
+
+        case 'get': {
+          // Load configuration
+          const loadCommand = buildLoadAlertConfigCommand(configPath);
+          const result = await ssh.execCommand(loadCommand);
+
+          let config = {};
+          if (result.stdout && result.stdout.trim()) {
+            try {
+              config = JSON.parse(result.stdout);
+            } catch (e) {
+              config = { error: 'Failed to parse config' };
+            }
+          }
+
+          response = {
+            server: serverName,
+            action: 'get',
+            config,
+            config_path: configPath,
           };
           break;
         }
 
-        // Get current metrics
-        const healthCommand = buildComprehensiveHealthCheckCommand();
-        const healthResult = await ssh.execCommand(healthCommand);
+        case 'check': {
+          // Load thresholds
+          const loadCommand = buildLoadAlertConfigCommand(configPath);
+          const loadResult = await ssh.execCommand(loadCommand);
 
-        if (healthResult.code !== 0) {
-          throw new Error('Failed to get current metrics');
-        }
+          let thresholds = {};
+          if (loadResult.stdout && loadResult.stdout.trim()) {
+            try {
+              thresholds = JSON.parse(loadResult.stdout);
+            } catch (e) {
+              throw new Error('No alert configuration found. Use action=set to configure.');
+            }
+          } else {
+            throw new Error('No alert configuration found. Use action=set to configure.');
+          }
 
-        const metrics = parseComprehensiveHealthCheck(healthResult.stdout);
+          if (!thresholds.enabled) {
+            response = {
+              server: serverName,
+              action: 'check',
+              message: 'Alerts are disabled',
+              thresholds,
+            };
+            break;
+          }
 
-        // Check thresholds
-        const alerts = checkAlertThresholds(metrics, thresholds);
+          // Get current metrics
+          const healthCommand = buildComprehensiveHealthCheckCommand();
+          const healthResult = await ssh.execCommand(healthCommand);
 
-        response = {
-          server: serverName,
-          action: 'check',
-          thresholds,
-          current_metrics: {
-            cpu: metrics.cpu,
-            memory: metrics.memory,
-            disks: metrics.disks
-          },
-          alerts,
-          alert_count: alerts.length,
-          status: alerts.length === 0 ? 'ok' : 'alerts_triggered'
-        };
+          if (healthResult.code !== 0) {
+            throw new Error('Failed to get current metrics');
+          }
 
-        if (alerts.length > 0) {
-          logger.warn('Health alerts triggered', {
+          const metrics = parseComprehensiveHealthCheck(healthResult.stdout);
+
+          // Check thresholds
+          const alerts = checkAlertThresholds(metrics, thresholds);
+
+          response = {
             server: serverName,
+            action: 'check',
+            thresholds,
+            current_metrics: {
+              cpu: metrics.cpu,
+              memory: metrics.memory,
+              disks: metrics.disks,
+            },
+            alerts,
             alert_count: alerts.length,
-            alerts
-          });
-        }
-        break;
-      }
+            status: alerts.length === 0 ? 'ok' : 'alerts_triggered',
+          };
 
-      default:
-        throw new Error(`Unknown action: ${action}`);
+          if (alerts.length > 0) {
+            logger.warn('Health alerts triggered', {
+              server: serverName,
+              alert_count: alerts.length,
+              alerts,
+            });
+          }
+          break;
+        }
+
+        default:
+          throw new Error(`Unknown action: ${action}`);
       }
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2)
-          }
-        ]
+            text: JSON.stringify(response, null, 2),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Alert setup failed', {
         server: serverName,
         action,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Alert setup failed: ${error.message}`
-          }
-        ]
+            text: `❌ Alert setup failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -4080,8 +4236,7 @@ registerToolConditional(
     description: 'Dump database to file (MySQL, PostgreSQL, MongoDB)',
     inputSchema: {
       server: z.string().describe('Server name'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb'])
-        .describe('Database type'),
+      type: z.enum(['mysql', 'postgresql', 'mongodb']).describe('Database type'),
       database: z.string().describe('Database name'),
       outputFile: z.string().describe('Output file path (will be created on remote server)'),
       dbUser: z.string().optional().describe('Database user'),
@@ -4089,16 +4244,30 @@ registerToolConditional(
       dbHost: z.string().optional().describe('Database host (default: localhost)'),
       dbPort: z.number().optional().describe('Database port'),
       compress: z.boolean().optional().describe('Compress output with gzip (default: true)'),
-      tables: z.array(z.string()).optional().describe('Specific tables to dump (MySQL/PostgreSQL only)')
-    }
+      tables: z
+        .array(z.string())
+        .optional()
+        .describe('Specific tables to dump (MySQL/PostgreSQL only)'),
+    },
   },
-  async ({ server: serverName, type, database, outputFile, dbUser, dbPassword, dbHost, dbPort, compress = true, tables }) => {
+  async ({
+    server: serverName,
+    type,
+    database,
+    outputFile,
+    dbUser,
+    dbPassword,
+    dbHost,
+    dbPort,
+    compress = true,
+    tables,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
 
       logger.info(`Dumping ${type} database: ${database}`, {
         server: serverName,
-        compress
+        compress,
       });
 
       // Build dump command based on type
@@ -4111,22 +4280,22 @@ registerToolConditional(
         port: dbPort,
         outputFile,
         compress,
-        tables
+        tables,
       };
 
       switch (type) {
-      case DB_TYPES.MYSQL:
-        dumpCommand = buildDBMySQLDumpCommand(options);
-        break;
-      case DB_TYPES.POSTGRESQL:
-        dumpCommand = buildDBPostgreSQLDumpCommand(options);
-        break;
-      case DB_TYPES.MONGODB:
-        options.outputDir = outputFile.replace(/\.(tar\.gz|gz)$/, '');
-        dumpCommand = buildDBMongoDBDumpCommand(options);
-        break;
-      default:
-        throw new Error(`Unsupported database type: ${type}`);
+        case DB_TYPES.MYSQL:
+          dumpCommand = buildDBMySQLDumpCommand(options);
+          break;
+        case DB_TYPES.POSTGRESQL:
+          dumpCommand = buildDBPostgreSQLDumpCommand(options);
+          break;
+        case DB_TYPES.MONGODB:
+          options.outputDir = outputFile.replace(/\.(tar\.gz|gz)$/, '');
+          dumpCommand = buildDBMongoDBDumpCommand(options);
+          break;
+        default:
+          throw new Error(`Unsupported database type: ${type}`);
       }
 
       // Execute dump
@@ -4144,43 +4313,46 @@ registerToolConditional(
       logger.info(`Database dump completed: ${formatBytes(size)}`, {
         server: serverName,
         database,
-        size
+        size,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              server: serverName,
-              type,
-              database,
-              output_file: outputFile,
-              size_bytes: size,
-              size_human: formatBytes(size),
-              compressed: compress,
-              timestamp: new Date().toISOString()
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                server: serverName,
+                type,
+                database,
+                output_file: outputFile,
+                size_bytes: size,
+                size_human: formatBytes(size),
+                compressed: compress,
+                timestamp: new Date().toISOString(),
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Database dump failed', {
         server: serverName,
         type,
         database,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Database dump failed: ${error.message}`
-          }
-        ]
+            text: `❌ Database dump failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -4192,24 +4364,36 @@ registerToolConditional(
     description: 'Import database from SQL file (MySQL, PostgreSQL, MongoDB)',
     inputSchema: {
       server: z.string().describe('Server name'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb'])
-        .describe('Database type'),
+      type: z.enum(['mysql', 'postgresql', 'mongodb']).describe('Database type'),
       database: z.string().describe('Target database name'),
       inputFile: z.string().describe('Input file path (on remote server)'),
       dbUser: z.string().optional().describe('Database user'),
       dbPassword: z.string().optional().describe('Database password'),
       dbHost: z.string().optional().describe('Database host (default: localhost)'),
       dbPort: z.number().optional().describe('Database port'),
-      drop: z.boolean().optional().describe('Drop existing collections/tables before import (MongoDB only, default: true)')
-    }
+      drop: z
+        .boolean()
+        .optional()
+        .describe('Drop existing collections/tables before import (MongoDB only, default: true)'),
+    },
   },
-  async ({ server: serverName, type, database, inputFile, dbUser, dbPassword, dbHost, dbPort, drop = true }) => {
+  async ({
+    server: serverName,
+    type,
+    database,
+    inputFile,
+    dbUser,
+    dbPassword,
+    dbHost,
+    dbPort,
+    drop = true,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
 
       logger.info(`Importing ${type} database: ${database}`, {
         server: serverName,
-        inputFile
+        inputFile,
       });
 
       // Build import command based on type
@@ -4221,22 +4405,22 @@ registerToolConditional(
         host: dbHost,
         port: dbPort,
         inputFile,
-        drop
+        drop,
       };
 
       switch (type) {
-      case DB_TYPES.MYSQL:
-        importCommand = buildMySQLImportCommand(options);
-        break;
-      case DB_TYPES.POSTGRESQL:
-        importCommand = buildPostgreSQLImportCommand(options);
-        break;
-      case DB_TYPES.MONGODB:
-        options.inputPath = inputFile;
-        importCommand = buildMongoDBRestoreCommand(options);
-        break;
-      default:
-        throw new Error(`Unsupported database type: ${type}`);
+        case DB_TYPES.MYSQL:
+          importCommand = buildMySQLImportCommand(options);
+          break;
+        case DB_TYPES.POSTGRESQL:
+          importCommand = buildPostgreSQLImportCommand(options);
+          break;
+        case DB_TYPES.MONGODB:
+          options.inputPath = inputFile;
+          importCommand = buildMongoDBRestoreCommand(options);
+          break;
+        default:
+          throw new Error(`Unsupported database type: ${type}`);
       }
 
       // Execute import
@@ -4248,41 +4432,44 @@ registerToolConditional(
 
       logger.info('Database import completed', {
         server: serverName,
-        database
+        database,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              server: serverName,
-              type,
-              database,
-              input_file: inputFile,
-              timestamp: new Date().toISOString(),
-              message: `Database ${database} imported successfully`
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                server: serverName,
+                type,
+                database,
+                input_file: inputFile,
+                timestamp: new Date().toISOString(),
+                message: `Database ${database} imported successfully`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Database import failed', {
         server: serverName,
         type,
         database,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Database import failed: ${error.message}`
-          }
-        ]
+            text: `❌ Database import failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -4294,15 +4481,18 @@ registerToolConditional(
     description: 'List databases or tables/collections',
     inputSchema: {
       server: z.string().describe('Server name'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb'])
-        .describe('Database type'),
-      database: z.string().optional()
-        .describe('Database name (if provided, lists tables/collections; if omitted, lists databases)'),
+      type: z.enum(['mysql', 'postgresql', 'mongodb']).describe('Database type'),
+      database: z
+        .string()
+        .optional()
+        .describe(
+          'Database name (if provided, lists tables/collections; if omitted, lists databases)'
+        ),
       dbUser: z.string().optional().describe('Database user'),
       dbPassword: z.string().optional().describe('Database password'),
       dbHost: z.string().optional().describe('Database host (default: localhost)'),
-      dbPort: z.number().optional().describe('Database port')
-    }
+      dbPort: z.number().optional().describe('Database port'),
+    },
   },
   async ({ server: serverName, type, database, dbUser, dbPassword, dbHost, dbPort }) => {
     try {
@@ -4311,7 +4501,7 @@ registerToolConditional(
       const listType = database ? 'tables/collections' : 'databases';
       logger.info(`Listing ${listType} for ${type}`, {
         server: serverName,
-        database
+        database,
       });
 
       let listCommand;
@@ -4320,35 +4510,35 @@ registerToolConditional(
         user: dbUser,
         password: dbPassword,
         host: dbHost,
-        port: dbPort
+        port: dbPort,
       };
 
       // Build command based on type and what to list
       if (database) {
         // List tables/collections
         switch (type) {
-        case DB_TYPES.MYSQL:
-          listCommand = buildMySQLListTablesCommand(options);
-          break;
-        case DB_TYPES.POSTGRESQL:
-          listCommand = buildPostgreSQLListTablesCommand(options);
-          break;
-        case DB_TYPES.MONGODB:
-          listCommand = buildMongoDBListCollectionsCommand(options);
-          break;
+          case DB_TYPES.MYSQL:
+            listCommand = buildMySQLListTablesCommand(options);
+            break;
+          case DB_TYPES.POSTGRESQL:
+            listCommand = buildPostgreSQLListTablesCommand(options);
+            break;
+          case DB_TYPES.MONGODB:
+            listCommand = buildMongoDBListCollectionsCommand(options);
+            break;
         }
       } else {
         // List databases
         switch (type) {
-        case DB_TYPES.MYSQL:
-          listCommand = buildMySQLListDatabasesCommand(options);
-          break;
-        case DB_TYPES.POSTGRESQL:
-          listCommand = buildPostgreSQLListDatabasesCommand(options);
-          break;
-        case DB_TYPES.MONGODB:
-          listCommand = buildMongoDBListDatabasesCommand(options);
-          break;
+          case DB_TYPES.MYSQL:
+            listCommand = buildMySQLListDatabasesCommand(options);
+            break;
+          case DB_TYPES.POSTGRESQL:
+            listCommand = buildPostgreSQLListDatabasesCommand(options);
+            break;
+          case DB_TYPES.MONGODB:
+            listCommand = buildMongoDBListDatabasesCommand(options);
+            break;
         }
       }
 
@@ -4368,7 +4558,7 @@ registerToolConditional(
         success: true,
         server: serverName,
         type,
-        listing: database ? 'tables' : 'databases'
+        listing: database ? 'tables' : 'databases',
       };
 
       if (database) {
@@ -4382,32 +4572,31 @@ registerToolConditional(
 
       logger.info(`Listed ${items.length} ${listType}`, {
         server: serverName,
-        type
+        type,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(response, null, 2)
-          }
-        ]
+            text: JSON.stringify(response, null, 2),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Database list failed', {
         server: serverName,
         type,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Database list failed: ${error.message}`
-          }
-        ]
+            text: `❌ Database list failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -4419,19 +4608,27 @@ registerToolConditional(
     description: 'Execute SELECT query on database (read-only, SELECT queries only)',
     inputSchema: {
       server: z.string().describe('Server name'),
-      type: z.enum(['mysql', 'postgresql', 'mongodb'])
-        .describe('Database type'),
+      type: z.enum(['mysql', 'postgresql', 'mongodb']).describe('Database type'),
       database: z.string().describe('Database name'),
       query: z.string().describe('SQL query (SELECT only) or MongoDB find query'),
-      collection: z.string().optional()
-        .describe('Collection name (MongoDB only)'),
+      collection: z.string().optional().describe('Collection name (MongoDB only)'),
       dbUser: z.string().optional().describe('Database user'),
       dbPassword: z.string().optional().describe('Database password'),
       dbHost: z.string().optional().describe('Database host (default: localhost)'),
-      dbPort: z.number().optional().describe('Database port')
-    }
+      dbPort: z.number().optional().describe('Database port'),
+    },
   },
-  async ({ server: serverName, type, database, query, collection, dbUser, dbPassword, dbHost, dbPort }) => {
+  async ({
+    server: serverName,
+    type,
+    database,
+    query,
+    collection,
+    dbUser,
+    dbPassword,
+    dbHost,
+    dbPort,
+  }) => {
     try {
       const ssh = await getConnection(serverName);
 
@@ -4443,7 +4640,7 @@ registerToolConditional(
       logger.info(`Executing ${type} query`, {
         server: serverName,
         database,
-        query: query.substring(0, 100)
+        query: query.substring(0, 100),
       });
 
       let queryCommand;
@@ -4453,26 +4650,26 @@ registerToolConditional(
         user: dbUser,
         password: dbPassword,
         host: dbHost,
-        port: dbPort
+        port: dbPort,
       };
 
       // Build query command based on type
       switch (type) {
-      case DB_TYPES.MYSQL:
-        queryCommand = buildMySQLQueryCommand(options);
-        break;
-      case DB_TYPES.POSTGRESQL:
-        queryCommand = buildPostgreSQLQueryCommand(options);
-        break;
-      case DB_TYPES.MONGODB:
-        if (!collection) {
-          throw new Error('collection parameter required for MongoDB queries');
-        }
-        options.collection = collection;
-        queryCommand = buildMongoDBQueryCommand(options);
-        break;
-      default:
-        throw new Error(`Unsupported database type: ${type}`);
+        case DB_TYPES.MYSQL:
+          queryCommand = buildMySQLQueryCommand(options);
+          break;
+        case DB_TYPES.POSTGRESQL:
+          queryCommand = buildPostgreSQLQueryCommand(options);
+          break;
+        case DB_TYPES.MONGODB:
+          if (!collection) {
+            throw new Error('collection parameter required for MongoDB queries');
+          }
+          options.collection = collection;
+          queryCommand = buildMongoDBQueryCommand(options);
+          break;
+        default:
+          throw new Error(`Unsupported database type: ${type}`);
       }
 
       // Execute query
@@ -4489,43 +4686,46 @@ registerToolConditional(
       logger.info('Query executed successfully', {
         server: serverName,
         database,
-        rows: lines.length
+        rows: lines.length,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              success: true,
-              server: serverName,
-              type,
-              database,
-              collection: collection || null,
-              query,
-              row_count: lines.length,
-              output: output,
-              timestamp: new Date().toISOString()
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                success: true,
+                server: serverName,
+                type,
+                database,
+                collection: collection || null,
+                query,
+                row_count: lines.length,
+                output: output,
+                timestamp: new Date().toISOString(),
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
-
     } catch (error) {
       logger.error('Database query failed', {
         server: serverName,
         type,
         database,
-        error: error.message
+        error: error.message,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: `❌ Database query failed: ${error.message}`
-          }
-        ]
+            text: `❌ Database query failed: ${error.message}`,
+          },
+        ],
       };
     }
   }
@@ -4552,14 +4752,19 @@ async function main() {
 
   console.error('🚀 MCP SSH Manager Server started');
   console.error(`📦 Profile: ${activeProfile}`);
-  console.error(`🖥️  Available servers: ${serverList.length > 0 ? serverList.join(', ') : 'none configured'}`);
+  console.error(
+    `🖥️  Available servers: ${serverList.length > 0 ? serverList.join(', ') : 'none configured'}`
+  );
   console.error('💡 Use server-manager.py to configure servers');
   console.error('🔄 Connection management: Auto-reconnect enabled, 30min timeout');
 
   // Set up periodic cleanup of old connections (every 10 minutes)
-  setInterval(() => {
-    cleanupOldConnections();
-  }, 10 * 60 * 1000);
+  setInterval(
+    () => {
+      cleanupOldConnections();
+    },
+    10 * 60 * 1000
+  );
 }
 
 main().catch(console.error);
